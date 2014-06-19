@@ -19,13 +19,13 @@ class Command(NoArgsCommand):
     help = "Synchronize users and groups from an authoritative LDAP server"
 
     def handle_noargs(self, **options):
-        ldap_groups = self.get_ldap_groups()
-        if ldap_groups:
-            self.sync_ldap_groups(ldap_groups)
-
         ldap_users = self.get_ldap_users()
         if ldap_users:
             self.sync_ldap_users(ldap_users)
+
+        ldap_groups = self.get_ldap_groups()
+        if ldap_groups:
+            self.sync_ldap_groups(ldap_groups)
 
     def get_ldap_users(self):
         """
@@ -109,7 +109,7 @@ class Command(NoArgsCommand):
             # }
             if user_attr[username_field] in existing_users:
                 this_local_user = existing_users[user_attr[username_field]]
-                if self.will_user_change(user_attr, this_local_user):
+                if self.will_object_change(user_attr, this_local_user):
                     this_updated_local_user = self.apply_updated_attrs(user_attr, this_local_user)
                     this_updated_local_user.save()
                     updated_users_count += 1
@@ -183,13 +183,17 @@ class Command(NoArgsCommand):
         group_attributes = attributes.keys()
 
         groups = self.ldap_search(group_filter, group_attributes, group_base)
-        logger.debug("Retrieved %d groups" % len(groups))
+        msg = "Retrieved %d groups" % len(groups)
+        logger.debug(msg)
+        self.stdout.write(msg)
         return groups
 
     def sync_ldap_groups(self, ldap_groups):
         """
         Synchronize LDAP groups with local group database.
         """
+        existing_groups = dict([(i.name, i) for i in Group.objects.all()])
+
         attributes = getattr(settings, 'LDAP_SYNC_GROUP_ATTRIBUTES', None)
         groupname_field = 'name'
 
@@ -197,6 +201,10 @@ class Command(NoArgsCommand):
             error_msg = ("LDAP_SYNC_GROUP_ATTRIBUTES must contain the "
                          "group name field '%s'" % groupname_field)
             raise ImproperlyConfigured(error_msg)
+
+        unsaved_groups = []
+
+        updated_groups_count = 0
 
         for cname, attrs in ldap_groups:
             # In some cases with AD, attrs is a list instead of a
@@ -219,21 +227,45 @@ class Command(NoArgsCommand):
                                groupname_field)
                 continue
 
-            kwargs = {
-                groupname_field + '__iexact': groupname,
-                'defaults': group_attr,
-            }
-
-            # Create or update group data in the local database
-            try:
-                group, created = Group.objects.get_or_create(**kwargs)
-            except IntegrityError as e:
-                logger.error("Error creating group %s" % e)
+            # kwargs = {
+            #     groupname_field + '__iexact': groupname,
+            #     'defaults': group_attr,
+            # }
+            if group_attr[groupname_field] in existing_groups:
+                this_local_group = existing_groups[group_attr[groupname_field]]
+                if self.will_object_change(group_attr, this_local_group):
+                    this_updated_local_group = self.apply_updated_attrs(group_attr, this_local_group)
+                    this_updated_local_group.save()
+                    updated_groups_count += 1
+                del(existing_groups[group_attr[groupname_field]])
             else:
-                if created:
-                    logger.debug("Created group %s" % groupname)
+                new_group = Group(**group_attr)
+                unsaved_groups.append(new_group)
+        Group.objects.bulk_create(unsaved_groups)
 
-        logger.info("Groups are synchronized")
+        msg = 'Updated {} existing django groups'.format(updated_groups_count)
+        self.stdout.write(msg)
+        logger.info(msg)
+
+        msg = 'Created {} new django groups'.format(len(unsaved_groups))
+        self.stdout.write(msg)
+        logger.info(msg)
+
+        exempt_groups = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_REMOVAL', [])
+
+        orphaned_group_names = set([i.name for i in existing_groups.values()])
+        orphaned_group_names.difference_update(exempt_groups)
+
+        Group.objects.filter(name__in=orphaned_group_names).delete()
+
+        if len(orphaned_group_names) > 0:
+            msg = '{} django groups no longer exist in the LDAP store and have been deleted'.format(len(orphaned_group_names))
+            logger.info(msg)
+            self.stdout.write(msg)
+
+        msg = "Groups are synchronized"
+        logger.info(msg)
+        self.stdout.write(msg)
 
     def ldap_search(self, filter, attributes, base):
         """
@@ -282,15 +314,15 @@ class Command(NoArgsCommand):
         l.unbind_s()
         return results
 
-    def will_user_change(self, ldap_attrs, local_user):
+    def will_object_change(self, ldap_attrs, local_object):
         '''
         Return true if the data in the ldap_user would change the data stored
-        in the local_user, otherwise false.
+        in the local_object, otherwise false.
         '''
         # I think all the attrs are utf-8 strings, possibly need to coerce
         # local user values to strings?
         for key, value in ldap_attrs.items():
-            if not getattr(local_user, key) == value:
+            if not getattr(local_object, key) == value:
                 return True
         return False
 
