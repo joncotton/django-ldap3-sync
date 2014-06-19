@@ -37,6 +37,12 @@ class Command(NoArgsCommand):
             logger.info(msg)
             return None
 
+        user_base = getattr(settings, 'LDAP_SYNC_USER_BASE', None)
+        if not user_base:
+            error_msg = ("LDAP_SYNC_USER_BASE must be specified in your Django "
+                         "settings file")
+            raise ImproperlyConfigured(error_msg)
+
         attributes = getattr(settings, 'LDAP_SYNC_USER_ATTRIBUTES', None)
         if not attributes:
             error_msg = ("LDAP_SYNC_USER_ATTRIBUTES must be specified in "
@@ -44,8 +50,10 @@ class Command(NoArgsCommand):
             raise ImproperlyConfigured(error_msg)
         user_attributes = attributes.keys()
 
-        users = self.ldap_search(user_filter, user_attributes)
-        logger.debug("Retrieved %d users" % len(users))
+        users = self.ldap_search(user_filter, user_attributes, user_base)
+        msg = "Retrieved {} LDAP users".format(len(users))
+        self.stdout.write(msg)
+        logger.debug(msg)
         return users
 
     def sync_ldap_users(self, ldap_users):
@@ -53,13 +61,26 @@ class Command(NoArgsCommand):
         Synchronize users with local user database.
         """
         model = get_user_model()
-        attributes = getattr(settings, 'LDAP_SYNC_USER_ATTRIBUTES', None)
         username_field = getattr(model, 'USERNAME_FIELD', 'username')
+        attributes = getattr(settings, 'LDAP_SYNC_USER_ATTRIBUTES', None)
 
+        # Do this first
         if username_field not in attributes.values():
             error_msg = ("LDAP_SYNC_USER_ATTRIBUTES must contain the "
                          "username field '%s'" % username_field)
             raise ImproperlyConfigured(error_msg)
+
+        # simulates django in_bulk but works with larger sets of objects
+        existing_users = dict([(getattr(u, username_field), u)
+                              for u in model.objects.all()])
+        msg = 'Found {} existing django users'.format(len(existing_users))
+        self.stdout.write(msg)
+        logger.info(msg)
+        logger.debug('Existing django users: {}'.format(existing_users.keys()))
+
+        unsaved_users = []
+
+        updated_users_count = 0
 
         for cname, attrs in ldap_users:
             # In some cases with AD, attrs is a list instead of a
@@ -82,31 +103,61 @@ class Command(NoArgsCommand):
                                username_field)
                 continue
 
-            kwargs = {
-                username_field + '__iexact': username,
-                'defaults': user_attr,
-            }
-
-            # Create or update user data in the local database
-            try:
-                user, created = model.objects.get_or_create(**kwargs)
-            except (IntegrityError, DataError) as e:
-                logger.error("Error creating user %s: %s" % (username, e))
+            # kwargs = {
+            #     username_field + '__iexact': username,
+            #     'defaults': user_attr,
+            # }
+            if user_attr[username_field] in existing_users:
+                this_local_user = existing_users[user_attr[username_field]]
+                if self.will_user_change(user_attr, this_local_user):
+                    this_updated_local_user = self.apply_updated_attrs(user_attr, this_local_user)
+                    this_updated_local_user.save()
+                    updated_users_count += 1
+                # Regardless of it the user is updated or not, remove from existing users
+                del(existing_users[user_attr[username_field]])
             else:
-                updated_fields = []
-                if created:
-                    logger.debug("Created user %s" % username)
-                    user.set_unusable_password()
-                    updated_fields.append('password')
-                else:
-                    for name, attr in user_attr.items():
-                        current_attr = getattr(user, name)
-                        if current_attr != attr:
-                            setattr(user, name, attr)
-                            updated_fields.append(name)
-                user.save(update_fields=updated_fields)
+                new_user = model(**user_attr)
+                unsaved_users.append(new_user)
+        model.objects.bulk_create(unsaved_users)
+        
+        msg = 'Updated {} existing django users'.format(updated_users_count)
+        self.stdout.write(msg)
+        logger.info(msg)
+
+        msg = 'Created {} new django users'.format(len(unsaved_users))
+        self.stdout.write(msg)
+        logger.info(msg)
+
+        # Anything left in the existing_users dict is no longer in the ldap directory
+        # These should be disabled.
+        exempt_users = getattr(settings, 'LDAP_SYNC_USER_EXEMPT_FROM_REMOVAL', [])
+        removal_action = getattr(settings, 'LDAP_SYNC_USER_REMOVAL_ACTION', 'nothing')
+
+        existing_user_ids = set([getattr(i, username_field) for i in existing_users.values()])
+        existing_user_ids.difference_update(exempt_users)
+
+        if removal_action != 'nothing' and len(existing_users) > 0:
+            if removal_action == 'disable':
+                model.objects.filter(username__in=existing_user_ids).update(is_active=False)
+                msg = 'Disabling {} django users'.format(len(existing_user_ids))
+                logger.info(msg)
+                self.stdout.write(msg)
+                logger.debug('Disabling django users: {}'.format(existing_user_ids))
+            if removal_action == 'delete':
+                # There are going to be issues here if there are more than 999 exiting user ids
+                model.objects.filter(username__in=existing_user_ids).delete()
+                msg = 'Deleting {} django users'.format(len(existing_user_ids))
+                logger.info(msg)
+                self.stdout.write(msg)
+                logger.debug('Deleting django users: {}'.format(existing_user_ids))
+        else:
+            if len(existing_user_ids) > 0:
+                msg = '{} django users no longer exist in the LDAP store but are being ignored as LDAP_SYNC_USER_REMOVAL_ACTION = \'nothing\''.format(len(existing_user_ids))
+                self.stdout.write(msg)
+                logger.warn(msg)
 
         logger.info("Users are synchronized")
+        self.stdout.write('Users are synchronized')
 
     def get_ldap_groups(self):
         """
@@ -118,6 +169,12 @@ class Command(NoArgsCommand):
             logger.info(msg)
             return None
 
+        group_base = getattr(settings, 'LDAP_SYNC_GROUP_BASE', None)
+        if not group_base:
+            error_msg = ("LDAP_SYNC_GROUP_BASE must be specified in your Django "
+                         "settings file")
+            raise ImproperlyConfigured(error_msg)
+
         attributes = getattr(settings, 'LDAP_SYNC_GROUP_ATTRIBUTES', None)
         if not attributes:
             error_msg = ("LDAP_SYNC_GROUP_ATTRIBUTES must be specified in "
@@ -125,7 +182,7 @@ class Command(NoArgsCommand):
             raise ImproperlyConfigured(error_msg)
         group_attributes = attributes.keys()
 
-        groups = self.ldap_search(group_filter, group_attributes)
+        groups = self.ldap_search(group_filter, group_attributes, group_base)
         logger.debug("Retrieved %d groups" % len(groups))
         return groups
 
@@ -178,7 +235,7 @@ class Command(NoArgsCommand):
 
         logger.info("Groups are synchronized")
 
-    def ldap_search(self, filter, attributes):
+    def ldap_search(self, filter, attributes, base):
         """
         Query the configured LDAP server with the provided search
         filter and attribute list. Returns a list of the results
@@ -190,29 +247,29 @@ class Command(NoArgsCommand):
                          "settings file")
             raise ImproperlyConfigured(error_msg)
 
-        base_user = getattr(settings, 'LDAP_SYNC_BASE_USER', None)
-        if not base_user:
-            error_msg = ("LDAP_SYNC_BASE_USER must be specified in your "
+        bind_user = getattr(settings, 'LDAP_SYNC_BIND_USER', None)
+        if not bind_user:
+            error_msg = ("LDAP_SYNC_BIND_USER must be specified in your "
                          "Django settings file")
             raise ImproperlyConfigured(error_msg)
 
-        base_pass = getattr(settings, 'LDAP_SYNC_BASE_PASS', None)
-        if not base_pass:
-            error_msg = ("LDAP_SYNC_BASE_PASS must be specified in your "
+        bind_pass = getattr(settings, 'LDAP_SYNC_BIND_PASS', None)
+        if not bind_pass:
+            error_msg = ("LDAP_SYNC_BIND_PASS must be specified in your "
                          "Django settings file")
             raise ImproperlyConfigured(error_msg)
 
-        base = getattr(settings, 'LDAP_SYNC_BASE', None)
-        if not base:
-            error_msg = ("LDAP_SYNC_BASE must be specified in your Django "
-                         "settings file")
-            raise ImproperlyConfigured(error_msg)
+        # base = getattr(settings, 'LDAP_SYNC_BASE', None)
+        # if not base:
+        #     error_msg = ("LDAP_SYNC_BASE must be specified in your Django "
+        #                  "settings file")
+        #     raise ImproperlyConfigured(error_msg)
 
         ldap.set_option(ldap.OPT_REFERRALS, 0)
         l = PagedLDAPObject(uri)
         l.protocol_version = 3
         try:
-            l.simple_bind_s(base_user, base_pass)
+            l.simple_bind_s(bind_user, bind_pass)
         except ldap.LDAPError:
             logger.error("Error connecting to LDAP server %s" % uri)
             raise
@@ -224,6 +281,24 @@ class Command(NoArgsCommand):
                                        serverctrls=None)
         l.unbind_s()
         return results
+
+    def will_user_change(self, ldap_attrs, local_user):
+        '''
+        Return true if the data in the ldap_user would change the data stored
+        in the local_user, otherwise false.
+        '''
+        # I think all the attrs are utf-8 strings, possibly need to coerce
+        # local user values to strings?
+        for key, value in ldap_attrs.items():
+            if not getattr(local_user, key) == value:
+                return True
+        return False
+
+    def apply_updated_attrs(self, ldap_attrs, local_user):
+        for key, value in ldap_attrs.items():
+            setattr(local_user, key, value)
+        return local_user
+
 
 
 class PagedResultsSearchObject:
