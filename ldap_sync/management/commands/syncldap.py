@@ -10,6 +10,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured
 from django.db import IntegrityError, DataError
+from ldap_sync.models import LDAPUser, LDAPGroup
 
 
 logger = logging.getLogger(__name__)
@@ -79,6 +80,7 @@ class Command(NoArgsCommand):
         logger.debug('Existing django users: {}'.format(existing_users.keys()))
 
         unsaved_users = []
+        username_cname_map = {}
 
         updated_users_count = 0
 
@@ -97,24 +99,23 @@ class Command(NoArgsCommand):
 
             try:
                 username = user_attr[username_field]
-                user_attr[username_field] = username.lower()
+                username = username.lower()
+                user_attr[username_field] = username
             except KeyError:
                 logger.warning("User is missing a required attribute '%s'" %
                                username_field)
                 continue
 
-            # kwargs = {
-            #     username_field + '__iexact': username,
-            #     'defaults': user_attr,
-            # }
-            if user_attr[username_field] in existing_users:
-                this_local_user = existing_users[user_attr[username_field]]
+            username_cname_map[username] = cname
+
+            if username in existing_users:
+                this_local_user = existing_users[username]
                 if self.will_object_change(user_attr, this_local_user):
                     this_updated_local_user = self.apply_updated_attrs(user_attr, this_local_user)
                     this_updated_local_user.save()
                     updated_users_count += 1
-                # Regardless of it the user is updated or not, remove from existing users
-                del(existing_users[user_attr[username_field]])
+                # Regardless of whether the user is updated or not, remove from existing users
+                del(existing_users[username])
             else:
                 new_user = model(**user_attr)
                 unsaved_users.append(new_user)
@@ -156,8 +157,31 @@ class Command(NoArgsCommand):
                 self.stdout.write(msg)
                 logger.warn(msg)
 
+        # Update LDAPUser objects, create new LDAPUser records where neccessary and update existing where changed
+        unsaved_ldap_users = []
+        current_users = model.objects.all().iterator()
+        for current_user in current_users:
+            try:
+                cname = username_cname_map[current_user.username]
+            except KeyError:
+                continue
+
+            try:
+                ldap_user = current_user.ldap_user
+            except LDAPUser.DoesNotExist:
+                new_ldap_user = LDAPUser(user=current_user, distinguishedName=cname)
+                unsaved_ldap_users.append(new_ldap_user)
+                continue
+
+            if not ldap_user.distinguishedName == cname:
+                ldap_user.distinguishedName = cname
+                ldap_user.save()
+        LDAPUser.objects.bulk_create(unsaved_ldap_users)
+
         logger.info("Users are synchronized")
         self.stdout.write('Users are synchronized')
+
+
 
     def get_ldap_groups(self):
         """
@@ -182,11 +206,28 @@ class Command(NoArgsCommand):
             raise ImproperlyConfigured(error_msg)
         group_attributes = attributes.keys()
 
+        sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', False)
+        if sync_membership:
+            group_attributes.append('member')
+
         groups = self.ldap_search(group_filter, group_attributes, group_base)
         msg = "Retrieved %d groups" % len(groups)
         logger.debug(msg)
         self.stdout.write(msg)
         return groups
+
+    # def get_ldap_group_membership(self, group_cname):
+    #     '''
+    #     Retrieve a list of users who are members of the given group.
+    #     '''
+    #     group_base = getattr(settings, 'LDAP_SYNC_GROUP_BASE', None)
+    #     if not group_base:
+    #         error_msg = ("LDAP_SYNC_GROUP_BASE must be specified in your Django "
+    #                      "settings file")
+    #         raise ImproperlyConfigured(error_msg)
+
+    #     membership_attributes = ['member']
+    #     members = self.ldap_search()
 
     def sync_ldap_groups(self, ldap_groups):
         """
@@ -204,9 +245,18 @@ class Command(NoArgsCommand):
 
         unsaved_groups = []
 
+        groupname_cname_map = {}
+        groupname_members_map = {}
+
         updated_groups_count = 0
 
         for cname, attrs in ldap_groups:
+            try:
+                group_membership = attrs['member']
+                del(attrs['member'])
+            except KeyError:
+                pass
+
             # In some cases with AD, attrs is a list instead of a
             # dict; these are not valid groups, so skip them
             try:
@@ -221,23 +271,23 @@ class Command(NoArgsCommand):
 
             try:
                 groupname = group_attr[groupname_field]
-                group_attr[groupname_field] = groupname.lower()
+                groupname = groupname.lower()
+                group_attr[groupname_field] = groupname
             except KeyError:
                 logger.warning("Group is missing a required attribute '%s'" %
                                groupname_field)
                 continue
 
-            # kwargs = {
-            #     groupname_field + '__iexact': groupname,
-            #     'defaults': group_attr,
-            # }
-            if group_attr[groupname_field] in existing_groups:
-                this_local_group = existing_groups[group_attr[groupname_field]]
+            groupname_cname_map[groupname] = cname
+            groupname_members_map[groupname] = group_membership
+
+            if groupname in existing_groups:
+                this_local_group = existing_groups[groupname]
                 if self.will_object_change(group_attr, this_local_group):
                     this_updated_local_group = self.apply_updated_attrs(group_attr, this_local_group)
                     this_updated_local_group.save()
                     updated_groups_count += 1
-                del(existing_groups[group_attr[groupname_field]])
+                del(existing_groups[groupname])
             else:
                 new_group = Group(**group_attr)
                 unsaved_groups.append(new_group)
@@ -263,9 +313,70 @@ class Command(NoArgsCommand):
             logger.info(msg)
             self.stdout.write(msg)
 
+        # Update LDAPUser objects, create new LDAPUser records where neccessary and update existing where changed
+        unsaved_ldap_groups = []
+        current_groups = Group.objects.all().iterator()
+        for current_group in current_groups:
+            try:
+                cname = groupname_cname_map[current_group.name]
+            except KeyError:
+                continue
+
+            try:
+                ldap_group = current_group.ldap_group
+            except LDAPGroup.DoesNotExist:
+                new_ldap_group = LDAPGroup(group=current_group, distinguishedName=cname)
+                unsaved_ldap_groups.append(new_ldap_group)
+                continue
+
+            if not ldap_group.distinguishedName == cname:
+                ldap_group.distinguishedName = cname
+                ldap_group.save()
+        LDAPGroup.objects.bulk_create(unsaved_ldap_groups)
+
         msg = "Groups are synchronized"
         logger.info(msg)
         self.stdout.write(msg)
+
+        sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', False)
+        if sync_membership:
+            msg = 'Synchronizing Group Membership'
+            logger.info(msg)
+            self.stdout.write(msg)
+
+            current_groups = Group.objects.all().iterator()
+            for current_group in current_groups:
+                try:
+                    ldap_group = current_group.ldap_group
+                except LDAPGroup.DoesNotExist:
+                    # No matching LDAPGroup, just continue and ignore
+                    msg = 'Skipping {} because a matching LDAPGroup cannot be found'.format(current_group)
+                    logger.info(msg)
+                    self.stdout.write(msg)
+                    continue
+
+                try:
+                    ldap_membership = groupname_members_map[current_group.name]
+                except KeyError:
+                    # No membership results, continue and ignore
+                    msg = 'Skipping {} because no membership can be found for it'.format(current_group)
+                    logger.info(msg)
+                    self.stdout.write(msg)
+                    continue
+
+                msg = 'Synchronizing membership for {}'.format(current_group)
+                logger.info(msg)
+                self.stdout.write(msg)
+                # Get ldap_users who should be in this group
+                ldap_users = LDAPUser.objects.filter(distinguishedName__in=ldap_membership).all()
+                # Apply to the auth group
+                auth_users = [l.user for l in ldap_users]
+                # This removes old users as well as setting new ones
+                current_group.user_set = auth_users
+
+            msg = 'Finished Synchronizing Group Membership'
+            logger.info(msg)
+            self.stdout.write(msg)
 
     def ldap_search(self, filter, attributes, base):
         """
@@ -330,7 +441,6 @@ class Command(NoArgsCommand):
         for key, value in ldap_attrs.items():
             setattr(local_user, key, value)
         return local_user
-
 
 
 class PagedResultsSearchObject:
