@@ -118,6 +118,8 @@ class Command(NoArgsCommand):
                 del(existing_users[username])
             else:
                 new_user = model(**user_attr)
+                # When a new user is created make their password unusable. This should cover everyone.
+                new_user.set_unusable_password()
                 unsaved_users.append(new_user)
         model.objects.bulk_create(unsaved_users)
         
