@@ -169,7 +169,7 @@ class Command(NoArgsCommand):
                 continue
 
             try:
-                ldap_user = current_user.ldap_user
+                ldap_user = current_user.ldap_sync_user
             except LDAPUser.DoesNotExist:
                 new_ldap_user = LDAPUser(user=current_user, distinguishedName=cname)
                 unsaved_ldap_users.append(new_ldap_user)
@@ -325,7 +325,7 @@ class Command(NoArgsCommand):
                 continue
 
             try:
-                ldap_group = current_group.ldap_group
+                ldap_group = current_group.ldap_sync_group
             except LDAPGroup.DoesNotExist:
                 new_ldap_group = LDAPGroup(group=current_group, distinguishedName=cname)
                 unsaved_ldap_groups.append(new_ldap_group)
@@ -349,7 +349,7 @@ class Command(NoArgsCommand):
             current_groups = Group.objects.all().iterator()
             for current_group in current_groups:
                 try:
-                    ldap_group = current_group.ldap_group
+                    ldap_group = current_group.ldap_sync_group
                 except LDAPGroup.DoesNotExist:
                     # No matching LDAPGroup, just continue and ignore
                     msg = 'Skipping {} because a matching LDAPGroup cannot be found'.format(current_group)
