@@ -3,3 +3,4 @@ _build
 dist
 MANIFEST
 pip_install.bat
+env

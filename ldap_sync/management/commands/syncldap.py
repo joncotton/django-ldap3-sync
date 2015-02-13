@@ -1,8 +1,16 @@
 import logging
 
-import ldap
-from ldap.ldapobject import LDAPObject
-from ldap.controls import SimplePagedResultsControl
+from ldap3 import (Connection,
+                   Server,
+                   ServerPool,
+                   ANONYMOUS,
+                   SIMPLE,
+                   SYNC,
+                   ASYNC,
+                   POOLING_STRATEGY_FIRST,
+                   POOLING_STRATEGY_ROUND_ROBIN,
+                   POOLING_STRATEGY_RANDOM)
+from ldap3.core.exceptions import LDAPExceptionError, LDAPCommunicationError
 
 from django.conf import settings
 from django.core.management.base import NoArgsCommand
@@ -39,10 +47,15 @@ class Command(NoArgsCommand):
             return None
 
         user_base = getattr(settings, 'LDAP_SYNC_USER_BASE', None)
-        if not user_base:
-            error_msg = ("LDAP_SYNC_USER_BASE must be specified in your Django "
-                         "settings file")
-            raise ImproperlyConfigured(error_msg)
+        if user_base is None:
+            # See if there is a LDAP_SYNC_BASE instead and use that
+            global_base = getattr(settings, 'LDAP_SYNC_BASE', None)
+            if global_base is None:
+                error_msg = ("Either LDAP_SYNC_USER_BASE or LDAP_SYNC_BASE must be specified in your Django "
+                             "settings file")
+                raise ImproperlyConfigured(error_msg)
+            else:
+                user_base = global_base
 
         attributes = getattr(settings, 'LDAP_SYNC_USER_ATTRIBUTES', None)
         if not attributes:
@@ -53,7 +66,6 @@ class Command(NoArgsCommand):
 
         users = self.ldap_search(user_filter, user_attributes, user_base)
         msg = "Retrieved {} LDAP users".format(len(users))
-        self.stdout.write(msg)
         logger.debug(msg)
         return users
 
@@ -75,7 +87,6 @@ class Command(NoArgsCommand):
         existing_users = dict([(getattr(u, username_field), u)
                               for u in model.objects.all()])
         msg = 'Found {} existing django users'.format(len(existing_users))
-        self.stdout.write(msg)
         logger.info(msg)
         logger.debug('Existing django users: {}'.format(existing_users.keys()))
 
@@ -184,7 +195,6 @@ class Command(NoArgsCommand):
         self.stdout.write('Users are synchronized')
 
 
-
     def get_ldap_groups(self):
         """
         Retrieve groups from target LDAP server.
@@ -197,9 +207,13 @@ class Command(NoArgsCommand):
 
         group_base = getattr(settings, 'LDAP_SYNC_GROUP_BASE', None)
         if not group_base:
-            error_msg = ("LDAP_SYNC_GROUP_BASE must be specified in your Django "
-                         "settings file")
-            raise ImproperlyConfigured(error_msg)
+            global_base = getattr(settings, 'LDAP_SYNC_BASE', None)
+            if global_base is None:                
+                error_msg = ("Either LDAP_SYNC_GROUP_BASE or LDAP_SYNC_BASE must be specified in your Django "
+                             "settings file")
+                raise ImproperlyConfigured(error_msg)
+            else:
+                group_base = global_base
 
         attributes = getattr(settings, 'LDAP_SYNC_GROUP_ATTRIBUTES', None)
         if not attributes:
@@ -415,9 +429,9 @@ class Command(NoArgsCommand):
         l.protocol_version = 3
         try:
             l.simple_bind_s(bind_user, bind_pass)
-        except ldap.LDAPError:
+        except ldap.LDAPError as e:
             logger.error("Error connecting to LDAP server %s" % uri)
-            raise
+            raise e
 
         results = l.paged_search_ext_s(base,
                                        ldap.SCOPE_SUBTREE,
@@ -443,6 +457,36 @@ class Command(NoArgsCommand):
         for key, value in ldap_attrs.items():
             setattr(local_user, key, value)
         return local_user
+
+    def extract_attributes(self, ldap_object, ldap_attrs):
+        object_attrs = {}
+        for name, attr in 
+                    user_attr = {}
+            for name, attr in items:
+                user_attr[attributes[name]] = attr[0].decode('utf-8')
+
+
+class SmartLDAPSearcher:
+    def __init__(self):
+        server_defs = getattr(settings, 'LDAP_SERVERS', None)
+        if server_defs is None:
+            raise ImproperlyConfigured('LDAP_SERVERS must be defined in the django settings file')
+        pooling_strategy = getattr(server_defs, 'POOLING_STRATEGY', 'ROUND_ROBIN')
+        pooling_strategy = self._strategy_to_constant(pooling_strategy)
+        self.server_pool = ServerPool(None, pooling_strategy)
+        
+
+    def _strategy_to_constant(self, strategy):
+        if strategy.lower() == 'round_robin':
+            return POOLING_STRATEGY_ROUND_ROBIN
+        elif strategy.lower() == 'first':
+            return POOLING_STRATEGY_FIRST
+        elif strategy.lower() == 'random':
+            return POOLING_STRATEGY_RANDOM
+        else:
+            raise ImproperlyConfigured('Invalid pooling strategy passed {}, stratey can be one of RANDOM, ROUND_ROBIN, FIRST')
+
+
 
 
 class PagedResultsSearchObject:
