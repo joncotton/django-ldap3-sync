@@ -15,12 +15,12 @@ class LDAPUser(models.Model):
     user = models.OneToOneField(User, related_name='ldap_sync_user')
     # There does not appear to be a maximum length for distinguishedName
     # safest to use text to avoid any length issues down the track
-    distinguishedName = models.TextField(blank=True, help_text=HELP_TEXT)
+    distinguished_name = models.TextField(blank=True, help_text=HELP_TEXT)
 
     def __unicode__(self):
         return '{} {} ({})'.format(self.user.first_name,
                                    self.user.last_name,
-                                   self.distinguishedName)
+                                   self.distinguished_name)
 
     class Meta:
         verbose_name = 'LDAP User'
@@ -29,10 +29,10 @@ class LDAPUser(models.Model):
 
 class LDAPGroup(models.Model):
     group = models.OneToOneField(Group, related_name='ldap_sync_group')
-    distinguishedName = models.TextField(blank=True, help_text=HELP_TEXT)
+    distinguished_name = models.TextField(blank=True, help_text=HELP_TEXT)
 
     def __unicode__(self):
-        return '{} ({})'.format(self.group.name, self.distinguishedName)
+        return '{} ({})'.format(self.group.name, self.distinguished_name)
 
     class Meta:
         verbose_name = 'LDAP Group'
