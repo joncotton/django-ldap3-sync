@@ -12,14 +12,14 @@ HELP_TEXT = ('DO NOT edit this unless you really know '
 
 
 class LDAPUser(models.Model):
-    user = models.OneToOneField(User, related_name='ldap_sync_user')
+    obj = models.OneToOneField(User, related_name='ldap_sync_user', verbose_name='User')
     # There does not appear to be a maximum length for distinguishedName
     # safest to use text to avoid any length issues down the track
     distinguished_name = models.TextField(blank=True, help_text=HELP_TEXT)
 
     def __unicode__(self):
-        return '{} {} ({})'.format(self.user.first_name,
-                                   self.user.last_name,
+        return '{} {} ({})'.format(self.obj.first_name,
+                                   self.obj.last_name,
                                    self.distinguished_name)
 
     class Meta:
@@ -28,11 +28,11 @@ class LDAPUser(models.Model):
 
 
 class LDAPGroup(models.Model):
-    group = models.OneToOneField(Group, related_name='ldap_sync_group')
+    obj = models.OneToOneField(Group, related_name='ldap_sync_group', verbose_name='Group')
     distinguished_name = models.TextField(blank=True, help_text=HELP_TEXT)
 
     def __unicode__(self):
-        return '{} ({})'.format(self.group.name, self.distinguished_name)
+        return '{} ({})'.format(self.obj.name, self.distinguished_name)
 
     class Meta:
         verbose_name = 'LDAP Group'

@@ -29,6 +29,7 @@ class Command(NoArgsCommand):
     def handle_noargs(self, **options):
         self.load_settings()
         self.sync_ldap_users()
+        self.sync_ldap_groups()
 
         # ldap_groups = self.get_ldap_groups()
         # if ldap_groups:
@@ -38,8 +39,9 @@ class Command(NoArgsCommand):
         """
         Retrieve user data from target LDAP server.
         """
+        logging.debug('Retrieving Users from LDAP')
         users = self.smart_ldap_searcher.search(self.user_base, self.user_filter, ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, self.user_ldap_attribute_names)
-        logger.debug("Retrieved {} LDAP users".format(len(users)))
+        logger.info("Retrieved {} LDAP users".format(len(users)))
         return users
 
     def sync_ldap_users(self):
@@ -47,305 +49,211 @@ class Command(NoArgsCommand):
         Synchronize users with local user database.
         """
         ldap_users = self.get_ldap_users()
-        if len(ldap_users) == 0:
-            raise SyncError('No users were returned from the LDAP search')
+        django_users = self.get_django_users()
 
-        existing_users = self.get_django_users()
+        self.sync_generic(ldap_objects=ldap_users,
+                          django_objects=django_users,
+                          attribute_map=self.user_attribute_map,
+                          django_object_model=self.user_model,
+                          unique_name_field='username',
+                          ldap_sync_model=LDAPUser,
+                          ldap_sync_related_name='ldap_sync_user',
+                          exempt_unique_names=self.exempt_usernames,
+                          removal_action=self.user_removal_action)
+        # ldap_users = self.get_ldap_users()
+        # if len(ldap_users) == 0:
+        #     raise SyncError('No users were returned from the LDAP search')
 
-        unsaved_user_models = []
-        username_dn_map = {}
+        # existing_users = self.get_django_users()
 
-        updated_users_count = 0
+        # unsaved_user_models = []
+        # username_dn_map = {}
 
-        for ldap_user in ldap_users:
-            try:
-                value_map = self.generate_value_map(self.user_attribute_map, ldap_user['attributes'])
-            except MissingLdapField as e:
-                logger.error('LDAP User {} is missing a field: {}'.format(ldap_user['dn'], e))
-                continue
-            username = value_map[self.username_field]
-            distinguished_name = ldap_user['dn']
+        # updated_users_count = 0
 
-            username_dn_map[username] = distinguished_name
-
-            try:
-                local_user = existing_users[username]
-                if self.will_model_change(value_map, local_user):
-                    self.apply_value_map(value_map, local_user)
-                    local_user.save()
-                    updated_users_count += 1
-                try:
-                    if local_user.ldap_sync_user.distinguished_name != distinguished_name:
-                        local_user.ldap_sync_user.distinguished_name = distinguished_name
-                        local_user.ldap_sync_user.save()
-                except LDAPUser.DoesNotExist:
-                    LDAPUser(user=local_user, distinguished_name=distinguished_name).save()
-                del(existing_users[username])
-            except KeyError:
-                local_user = self.user_model(**value_map)
-                local_user.set_unusable_password()
-                unsaved_user_models.append(local_user)
-        self.stdout.write('Bulk creating unsaved users')
-        self.user_model.objects.bulk_create(unsaved_user_models)
-        self.stdout.write('Retreiving just saved users for ID\'s')
-        just_saved_user_models = self.user_model.objects.filter(username__in=[u.username for u in unsaved_user_models]).all()
-        self.stdout.write('Bulk creating LDAPUser models')
-        LDAPUser.objects.bulk_create([LDAPUser(user=u, distinguished_name=username_dn_map[u.username]) for u in just_saved_user_models])
-        self.stdout.write('Finished')
-
-        msg = 'Updated {} existing django users'.format(updated_users_count)
-        self.stdout.write(msg)
-        logger.info(msg)
-
-        msg = 'Created {} new django users'.format(len(unsaved_user_models))
-        self.stdout.write(msg)
-        logger.info(msg)
-
-        # Anything left in the existing_users dict is no longer in the ldap directory
-        # These should be disabled.
-
-        existing_user_usernames = set([getattr(i, self.username_field) for i in existing_users.values()])
-        existing_user_usernames.difference_update(self.exempt_usernames)
-        existing_user_ids = [e.id for e in existing_users if e.username in existing_user_usernames]
-
-        if self.user_removal_action == NOTHING:
-            logger.info('LDAP_SYNC_USER_REMOVAL_ACTION is NOTHING so the {} users that would have been removed are being ignored.'.format(len(existing_user_usernames)))
-        elif self.user_removal_action == SUSPEND:
-            self.user_model.objects.in_bulk(existing_user_ids).update(is_active=False)
-            # users_to_suspend = [v for k,v in existing_users.items() if k in existing_user_usernames]
-            # for user in users_to_suspend:
-            #     user.is_active = False
-            #     user.save()
-            logger.info('Suspended {} users.'.format(len(existing_user_ids)))
-        elif self.user_removal_action == DELETE:
-            self.user_model.objects.in_bulk(existing_user_ids).all().delete()
-            # users_to_delete = [v for k,v in existing_users.items() if k in existing_user_usernames]
-            # for user in users_to_delete:
-            #     user.delete()
-            logger.info('Deleted {} users.'.format(len(existing_user_usernames)))
-
-
-
-
-
-        # if removal_action != 'nothing' and len(existing_users) > 0:
-        #     if removal_action == 'disable':
-        #         user_model.objects.filter(username__in=existing_user_ids).update(is_active=False)
-        #         msg = 'Disabling {} django users'.format(len(existing_user_ids))
-        #         logger.info(msg)
-        #         self.stdout.write(msg)
-        #         logger.debug('Disabling django users: {}'.format(existing_user_ids))
-        #     if removal_action == 'delete':
-        #         # There are going to be issues here if there are more than 999 exiting user ids
-        #         user_model.objects.filter(username__in=existing_user_ids).delete()
-        #         msg = 'Deleting {} django users'.format(len(existing_user_ids))
-        #         logger.info(msg)
-        #         self.stdout.write(msg)
-        #         logger.debug('Deleting django users: {}'.format(existing_user_ids))
-        # else:
-        #     if len(existing_user_ids) > 0:
-        #         msg = '{} django users no longer exist in the LDAP store but are being ignored as LDAP_SYNC_USER_REMOVAL_ACTION = \'nothing\''.format(len(existing_user_ids))
-        #         self.stdout.write(msg)
-        #         logger.warn(msg)
-
-        # # Update LDAPUser objects, create new LDAPUser records where neccessary and update existing where changed
-        # unsaved_ldap_users = []
-        # current_users = model.objects.all().iterator()
-        # for current_user in current_users:
+        # for ldap_user in ldap_users:
         #     try:
-        #         cname = username_cname_map[current_user.username]
+        #         value_map = self.generate_value_map(self.user_attribute_map, ldap_user['attributes'])
+        #     except MissingLdapField as e:
+        #         logger.error('LDAP User {} is missing a field: {}'.format(ldap_user['dn'], e))
+        #         continue
+        #     username = value_map[self.username_field]
+        #     distinguished_name = ldap_user['dn']
+
+        #     username_dn_map[username] = distinguished_name
+
+        #     try:
+        #         local_user = existing_users[username]
+        #         if self.will_model_change(value_map, local_user):
+        #             self.apply_value_map(value_map, local_user)
+        #             local_user.save()
+        #             updated_users_count += 1
+        #         try:
+        #             if local_user.ldap_sync_user.distinguished_name != distinguished_name:
+        #                 local_user.ldap_sync_user.distinguished_name = distinguished_name
+        #                 local_user.ldap_sync_user.save()
+        #         except LDAPUser.DoesNotExist:
+        #             LDAPUser(obj=local_user, distinguished_name=distinguished_name).save()
+        #         del(existing_users[username])
         #     except KeyError:
-        #         continue
+        #         local_user = self.user_model(**value_map)
+        #         local_user.set_unusable_password()
+        #         unsaved_user_models.append(local_user)
+        # logger.debug('Bulk creating unsaved users')
+        # self.user_model.objects.bulk_create(unsaved_user_models)
+        # logger.debug('Retreiving just saved users for ID\'s')
+        # just_saved_user_models = self.user_model.objects.filter(username__in=[u.username for u in unsaved_user_models]).all()
+        # logger.debug('Bulk creating LDAPUser models')
+        # LDAPUser.objects.bulk_create([LDAPUser(obj=u, distinguished_name=username_dn_map[u.username]) for u in just_saved_user_models])
 
-        #     try:
-        #         ldap_user = current_user.ldap_sync_user
-        #     except LDAPUser.DoesNotExist:
-        #         new_ldap_user = LDAPUser(user=current_user, distinguished_name=cname)
-        #         unsaved_ldap_users.append(new_ldap_user)
-        #         continue
+        # msg = 'Updated {} existing django users'.format(updated_users_count)
+        # self.stdout.write(msg)
+        # logger.info(msg)
 
-        #     if not ldap_user.distinguished_name == cname:
-        #         ldap_user.distinguished_name = cname
-        #         ldap_user.save()
-        # LDAPUser.objects.bulk_create(unsaved_ldap_users)
+        # msg = 'Created {} new django users'.format(len(unsaved_user_models))
+        # self.stdout.write(msg)
+        # logger.info(msg)
 
-        logger.info("Users are synchronized")
-        self.stdout.write('Users are synchronized')
+        # # Anything left in the existing_users dict is no longer in the ldap directory
+        # # These should be disabled.
+        # existing_user_usernames = set(_username for _username in existing_users.keys())
+        # existing_user_usernames.difference_update(self.exempt_usernames)
+        # existing_user_ids = [e.id for e in existing_users.values() if getattr(e, self.username_field) in existing_user_usernames]
+
+        # if self.user_removal_action == NOTHING:
+        #     logger.info('LDAP_SYNC_USER_REMOVAL_ACTION is NOTHING so the {} users that would have been removed are being ignored.'.format(len(existing_user_usernames)))
+        # elif self.user_removal_action == SUSPEND:
+        #     self.user_model.objects.in_bulk(existing_user_ids).update(is_active=False)
+        #     logger.info('Suspended {} users.'.format(len(existing_user_ids)))
+        # elif self.user_removal_action == DELETE:
+        #     self.user_model.objects.in_bulk(existing_user_ids).all().delete()
+        #     logger.info('Deleted {} users.'.format(len(existing_user_usernames)))
+
+        # logger.info("Users are synchronized")
+        # self.stdout.write('Users are synchronized')
 
 
     def get_ldap_groups(self):
         """
         Retrieve groups from target LDAP server.
         """
-
-
-        groups = self.ldap_search(group_filter, group_attributes, group_base)
-        msg = "Retrieved %d groups" % len(groups)
-        logger.debug(msg)
-        self.stdout.write(msg)
+        logger.debug('Retrieving Groups from LDAP')
+        groups = self.smart_ldap_searcher.search(self.group_base, self.group_filter, ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, self.group_ldap_attribute_names)
+        logger.info('Rerieved {} LDAP Groups'.format(len(groups)))
         return groups
 
-    # def get_ldap_group_membership(self, group_cname):
-    #     '''
-    #     Retrieve a list of users who are members of the given group.
-    #     '''
-    #     group_base = getattr(settings, 'LDAP_SYNC_GROUP_BASE', None)
-    #     if not group_base:
-    #         error_msg = ("LDAP_SYNC_GROUP_BASE must be specified in your Django "
-    #                      "settings file")
-    #         raise ImproperlyConfigured(error_msg)
+    def get_ldap_group_membership(self, group_dn):
+        '''
+        Retrieve a list of user DN's that are members of a particular group.
+        '''
+        logger.debug('Retrieving members for group with DN {}'.format(group_dn))
+        members = self.smart_ldap_searcher.search(self.user_base, self.membership_filter.format(dn=group_dn))
+        logger.debug('Retrieved {} members for group with DN {}'.format(len(members), group_dn))
+        return members
 
-    #     membership_attributes = ['member']
-    #     members = self.ldap_search()
-
-    def sync_ldap_groups(self, ldap_groups):
+    def sync_ldap_groups(self):
         """
         Synchronize LDAP groups with local group database.
         """
-        existing_groups = dict([(i.name, i) for i in Group.objects.all()])
+        ldap_groups = self.get_ldap_groups()
+        django_groups = self.get_django_groups()
 
-        
-        groupname_field = 'name'
+        self.sync_generic(ldap_objects=ldap_groups,
+                          django_objects=django_groups,
+                          attribute_map=self.group_attribute_map,
+                          django_object_model=Group,
+                          unique_name_field='name',
+                          ldap_sync_model=LDAPGroup,
+                          ldap_sync_related_name='ldap_sync_group',
+                          exempt_unique_names=self.exempt_groupnames,
+                          removal_action=self.group_removal_action)
 
-        if groupname_field not in attributes.values():
-            error_msg = ("LDAP_SYNC_GROUP_ATTRIBUTES must contain the "
-                         "group name field '%s'" % groupname_field)
-            raise ImproperlyConfigured(error_msg)
+    def sync_generic(self,
+                     ldap_objects,
+                     django_objects,
+                     attribute_map,
+                     django_object_model,
+                     unique_name_field,
+                     ldap_sync_model,
+                     ldap_sync_related_name,
+                     exempt_unique_names=[],
+                     removal_action=NOTHING):
+        """
+        A generic synchronization method.
+        """
+        model_name = django_object_model.__name__
 
-        unsaved_groups = []
+        unsaved_models = []
+        model_dn_map = {}
 
-        groupname_cname_map = {}
-        groupname_members_map = {}
+        updated_model_count = 0
 
-        updated_groups_count = 0
-
-        for cname, attrs in ldap_groups:
+        for ldap_object in ldap_objects:
             try:
-                group_membership = attrs['member']
-                del(attrs['member'])
-            except KeyError:
-                pass
-
-            # In some cases with AD, attrs is a list instead of a
-            # dict; these are not valid groups, so skip them
-            try:
-                items = attrs.items()
-            except AttributeError:
+                value_map = self.generate_value_map(attribute_map, ldap_object['attributes'])
+            except MissingLdapField as e:
+                logger.error('LDAP Object {} is missing a field: {}'.format(ldap_object['dn'], e))
                 continue
+            unique_name = value_map[unique_name_field]
+            distinguished_name = ldap_object['dn']
 
-            # Extract user data from LDAP response
-            group_attr = {}
-            for name, attr in items:
-                group_attr[attributes[name]] = attr[0].decode('utf-8')
-
-            try:
-                groupname = group_attr[groupname_field]
-                groupname = groupname.lower()
-                group_attr[groupname_field] = groupname
-            except KeyError:
-                logger.warning("Group is missing a required attribute '%s'" %
-                               groupname_field)
-                continue
-
-            groupname_cname_map[groupname] = cname
-            groupname_members_map[groupname] = group_membership
-
-            if groupname in existing_groups:
-                this_local_group = existing_groups[groupname]
-                if self.will_object_change(group_attr, this_local_group):
-                    this_updated_local_group = self.apply_updated_attrs(group_attr, this_local_group)
-                    this_updated_local_group.save()
-                    updated_groups_count += 1
-                del(existing_groups[groupname])
-            else:
-                new_group = Group(**group_attr)
-                unsaved_groups.append(new_group)
-        Group.objects.bulk_create(unsaved_groups)
-
-        msg = 'Updated {} existing django groups'.format(updated_groups_count)
-        self.stdout.write(msg)
-        logger.info(msg)
-
-        msg = 'Created {} new django groups'.format(len(unsaved_groups))
-        self.stdout.write(msg)
-        logger.info(msg)
-
-        
-
-        orphaned_group_names = set([i.name for i in existing_groups.values()])
-        orphaned_group_names.difference_update(exempt_groups)
-
-        Group.objects.filter(name__in=orphaned_group_names).delete()
-
-        if len(orphaned_group_names) > 0:
-            msg = '{} django groups no longer exist in the LDAP store and have been deleted'.format(len(orphaned_group_names))
-            logger.info(msg)
-            self.stdout.write(msg)
-
-        # Update LDAPUser objects, create new LDAPUser records where neccessary and update existing where changed
-        unsaved_ldap_groups = []
-        current_groups = Group.objects.all().iterator()
-        for current_group in current_groups:
-            try:
-                cname = groupname_cname_map[current_group.name]
-            except KeyError:
-                continue
+            model_dn_map[unique_name] = distinguished_name
 
             try:
-                ldap_group = current_group.ldap_sync_group
-            except LDAPGroup.DoesNotExist:
-                new_ldap_group = LDAPGroup(group=current_group, distinguished_name=cname)
-                unsaved_ldap_groups.append(new_ldap_group)
-                continue
-
-            if not ldap_group.distinguished_name == cname:
-                ldap_group.distinguished_name = cname
-                ldap_group.save()
-        LDAPGroup.objects.bulk_create(unsaved_ldap_groups)
-
-        msg = "Groups are synchronized"
-        logger.info(msg)
-        self.stdout.write(msg)
-
-        
-        if sync_membership:
-            msg = 'Synchronizing Group Membership'
-            logger.info(msg)
-            self.stdout.write(msg)
-
-            current_groups = Group.objects.all().iterator()
-            for current_group in current_groups:
+                django_object = django_objects[unique_name]
+                if self.will_model_change(value_map, django_object):
+                    self.apply_value_map(value_map, django_object)
+                    django_object.save()
+                    updated_model_count += 1
                 try:
-                    ldap_group = current_group.ldap_sync_group
-                except LDAPGroup.DoesNotExist:
-                    # No matching LDAPGroup, just continue and ignore
-                    msg = 'Skipping {} because a matching LDAPGroup cannot be found'.format(current_group)
-                    logger.info(msg)
-                    self.stdout.write(msg)
-                    continue
+                    if getattr(django_object, ldap_sync_related_name).distinguished_name != distinguished_name:
+                        getattr(django_object, ldap_sync_related_name).distinguished_name = distinguished_name
+                        getattr(django_object, ldap_sync_related_name).save()
+                except ldap_sync_model.DoesNotExist:
+                    ldap_sync_model(obj=django_object, distinguished_name=distinguished_name).save()
+                del(django_objects[unique_name])
+            except KeyError:
+                django_object = django_object_model(**value_map)
+                if hasattr(django_object, 'set_unusable_password'):
+                    # only do this when its a user (or has this method)
+                    django_object.set_unusable_password()
+                unsaved_models.append(django_object)
+        logger.debug('Bulk creating unsaved {}'.format(model_name))
+        django_object_model.objects.bulk_create(unsaved_models)
+        logger.debug('Retrieving ID\'s for the objects that were just created')
 
-                try:
-                    ldap_membership = groupname_members_map[current_group.name]
-                except KeyError:
-                    # No membership results, continue and ignore
-                    msg = 'Skipping {} because no membership can be found for it'.format(current_group)
-                    logger.info(msg)
-                    self.stdout.write(msg)
-                    continue
+        filter_key = '{}__in'.format(unique_name_field)
+        filter_value = [getattr(u, unique_name_field) for u in unsaved_models]
+        just_saved_models = django_object_model.objects.filter(**{filter_key: filter_value}).all()
+        logger.debug('Bulk creating ldap_sync models')
+        ldap_sync_model.objects.bulk_create([ldap_sync_model(obj=u, distinguished_name=model_dn_map[getattr(u, unique_name_field)]) for u in just_saved_models])
 
-                msg = 'Synchronizing membership for {}'.format(current_group)
-                logger.info(msg)
-                self.stdout.write(msg)
-                # Get ldap_users who should be in this group
-                ldap_users = LDAPUser.objects.filter(distinguished_name__in=ldap_membership).all()
-                # Apply to the auth group
-                auth_users = [l.user for l in ldap_users]
-                # This removes old users as well as setting new ones
-                current_group.user_set = auth_users
+        msg = 'Updated {} existing django objects'.format(updated_model_count)
+        self.stdout.write(msg)
+        logger.info(msg)
 
-            msg = 'Finished Synchronizing Group Membership'
-            logger.info(msg)
-            self.stdout.write(msg)
+        msg = 'Created {} new django objects'.format(len(unsaved_models))
+        self.stdout.write(msg)
+        logger.info(msg)
+
+        # Anything left in the existing_users dict is no longer in the ldap directory
+        # These should be disabled.
+        existing_unique_names = set(_unique_name for _unique_name in django_objects.keys())
+        existing_unique_names.difference_update(exempt_unique_names)
+        existing_model_ids = [e.id for e in django_objects.values() if getattr(e, unique_name_field) in existing_unique_names]
+
+        if removal_action == NOTHING:
+            logger.info('Removal action is set to NOTHING so the {} objects that would have been removed are being ignored.'.format(len(existing_unique_names)))
+        elif removal_action == SUSPEND:
+            if hasattr(django_object_model, 'is_active'):
+                django_object_model.objects.in_bulk(existing_user_ids).update(is_active=False)
+            logger.info('Suspended {} users.'.format(len(existing_user_ids)))
+        elif removal_action == DELETE:
+            django_object_model.objects.in_bulk(existing_user_ids).all().delete()
+            logger.info('Deleted {} users.'.format(len(existing_unique_names)))
+
+        logger.info("Objects are synchronized")
+        self.stdout.write('Objects are synchronized')
 
     def will_model_change(self, value_map, user_model):
         # I think all the attrs are utf-8 strings, possibly need to coerce
@@ -464,6 +372,8 @@ class Command(NoArgsCommand):
             self.group_ldap_attribute_names.append('member')
 
         self.exempt_groupnames = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_REMOVAL', [])
+
+        self.membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', '(objectClass=user)(memberOf={dn})')
 
         # LDAP Servers
         try:

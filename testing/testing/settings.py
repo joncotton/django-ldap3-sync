@@ -16,6 +16,51 @@ BASE_DIR = os.path.dirname(os.path.dirname(__file__))
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/1.6/howto/deployment/checklist/
 
+LOGGING = {
+    'version': 1,
+    'disable_existing_loggers': True,
+    'formatters': {
+        'verbose': {
+            'format': '%(levelname)s %(asctime)s %(module)s %(process)d %(thread)d %(message)s'
+        },
+        'simple': {
+            'format': '%(levelname)s %(message)s'
+        },
+    },
+    'handlers': {
+        'null': {
+            'level': 'DEBUG',
+            'class': 'django.utils.log.NullHandler',
+        },
+        'console': {
+            'level': 'DEBUG',
+            'class': 'logging.StreamHandler',
+            'formatter': 'simple'
+        },
+        'mail_admins': {
+            'level': 'ERROR',
+            'class': 'django.utils.log.AdminEmailHandler',
+        }
+    },
+    'loggers': {
+        'django': {
+            'handlers': ['null'],
+            'propagate': True,
+            'level': 'INFO',
+        },
+        'django.request': {
+            'handlers': ['mail_admins'],
+            'level': 'ERROR',
+            'propagate': False,
+        },
+        'ldap_sync': {
+            'handlers': ['console'],
+            'propogate': True,
+            'level': 'DEBUG',
+        },
+    }
+}
+
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = '^e!ya!zqt$_z$gyevd&g86o62i&3a_2@=gd%^1#e&rop2t9xq2'
 
@@ -96,7 +141,7 @@ LDAP_CONFIG = {
 
 # LDAP SYNC SETTINGS
 LDAP_SYNC_BASE = 'OU=Automated Objects,DC=stmonicas,DC=qld,DC=edu,DC=au'
-LDAP_SYNC_USER_FILTER = '(&(objectClass=user)(givenName=p*)(|(employeeType=STUDENT)(employeeType=STAFF)))'
+LDAP_SYNC_USER_FILTER = '(&(objectClass=user)(|(employeeType=STUDENT)(employeeType=STAFF)))'
 LDAP_SYNC_USER_ATTRIBUTES = {
     "sAMAccountName": "username",
     "givenName": "first_name",
