@@ -31,10 +31,6 @@ class Command(NoArgsCommand):
         self.sync_ldap_users()
         self.sync_ldap_groups()
 
-        # ldap_groups = self.get_ldap_groups()
-        # if ldap_groups:
-        #     self.sync_ldap_groups(ldap_groups)
-
     def get_ldap_users(self):
         """
         Retrieve user data from target LDAP server.
@@ -60,78 +56,6 @@ class Command(NoArgsCommand):
                           ldap_sync_related_name='ldap_sync_user',
                           exempt_unique_names=self.exempt_usernames,
                           removal_action=self.user_removal_action)
-        # ldap_users = self.get_ldap_users()
-        # if len(ldap_users) == 0:
-        #     raise SyncError('No users were returned from the LDAP search')
-
-        # existing_users = self.get_django_users()
-
-        # unsaved_user_models = []
-        # username_dn_map = {}
-
-        # updated_users_count = 0
-
-        # for ldap_user in ldap_users:
-        #     try:
-        #         value_map = self.generate_value_map(self.user_attribute_map, ldap_user['attributes'])
-        #     except MissingLdapField as e:
-        #         logger.error('LDAP User {} is missing a field: {}'.format(ldap_user['dn'], e))
-        #         continue
-        #     username = value_map[self.username_field]
-        #     distinguished_name = ldap_user['dn']
-
-        #     username_dn_map[username] = distinguished_name
-
-        #     try:
-        #         local_user = existing_users[username]
-        #         if self.will_model_change(value_map, local_user):
-        #             self.apply_value_map(value_map, local_user)
-        #             local_user.save()
-        #             updated_users_count += 1
-        #         try:
-        #             if local_user.ldap_sync_user.distinguished_name != distinguished_name:
-        #                 local_user.ldap_sync_user.distinguished_name = distinguished_name
-        #                 local_user.ldap_sync_user.save()
-        #         except LDAPUser.DoesNotExist:
-        #             LDAPUser(obj=local_user, distinguished_name=distinguished_name).save()
-        #         del(existing_users[username])
-        #     except KeyError:
-        #         local_user = self.user_model(**value_map)
-        #         local_user.set_unusable_password()
-        #         unsaved_user_models.append(local_user)
-        # logger.debug('Bulk creating unsaved users')
-        # self.user_model.objects.bulk_create(unsaved_user_models)
-        # logger.debug('Retreiving just saved users for ID\'s')
-        # just_saved_user_models = self.user_model.objects.filter(username__in=[u.username for u in unsaved_user_models]).all()
-        # logger.debug('Bulk creating LDAPUser models')
-        # LDAPUser.objects.bulk_create([LDAPUser(obj=u, distinguished_name=username_dn_map[u.username]) for u in just_saved_user_models])
-
-        # msg = 'Updated {} existing django users'.format(updated_users_count)
-        # self.stdout.write(msg)
-        # logger.info(msg)
-
-        # msg = 'Created {} new django users'.format(len(unsaved_user_models))
-        # self.stdout.write(msg)
-        # logger.info(msg)
-
-        # # Anything left in the existing_users dict is no longer in the ldap directory
-        # # These should be disabled.
-        # existing_user_usernames = set(_username for _username in existing_users.keys())
-        # existing_user_usernames.difference_update(self.exempt_usernames)
-        # existing_user_ids = [e.id for e in existing_users.values() if getattr(e, self.username_field) in existing_user_usernames]
-
-        # if self.user_removal_action == NOTHING:
-        #     logger.info('LDAP_SYNC_USER_REMOVAL_ACTION is NOTHING so the {} users that would have been removed are being ignored.'.format(len(existing_user_usernames)))
-        # elif self.user_removal_action == SUSPEND:
-        #     self.user_model.objects.in_bulk(existing_user_ids).update(is_active=False)
-        #     logger.info('Suspended {} users.'.format(len(existing_user_ids)))
-        # elif self.user_removal_action == DELETE:
-        #     self.user_model.objects.in_bulk(existing_user_ids).all().delete()
-        #     logger.info('Deleted {} users.'.format(len(existing_user_usernames)))
-
-        # logger.info("Users are synchronized")
-        # self.stdout.write('Users are synchronized')
-
 
     def get_ldap_groups(self):
         """
@@ -214,8 +138,8 @@ class Command(NoArgsCommand):
                 del(django_objects[unique_name])
             except KeyError:
                 django_object = django_object_model(**value_map)
-                if hasattr(django_object, 'set_unusable_password'):
-                    # only do this when its a user (or has this method)
+                if hasattr(django_object, 'set_unusable_password') and self.set_unusable_password:
+                    # only do this when its a user (or has this method) and the config says to do it
                     django_object.set_unusable_password()
                 unsaved_models.append(django_object)
         logger.debug('Bulk creating unsaved {}'.format(model_name))
@@ -228,11 +152,11 @@ class Command(NoArgsCommand):
         logger.debug('Bulk creating ldap_sync models')
         ldap_sync_model.objects.bulk_create([ldap_sync_model(obj=u, distinguished_name=model_dn_map[getattr(u, unique_name_field)]) for u in just_saved_models])
 
-        msg = 'Updated {} existing django objects'.format(updated_model_count)
+        msg = 'Updated {} existing {}'.format(updated_model_count, model_name)
         self.stdout.write(msg)
         logger.info(msg)
 
-        msg = 'Created {} new django objects'.format(len(unsaved_models))
+        msg = 'Created {} new {}'.format(len(unsaved_models), model_name)
         self.stdout.write(msg)
         logger.info(msg)
 
@@ -246,14 +170,16 @@ class Command(NoArgsCommand):
             logger.info('Removal action is set to NOTHING so the {} objects that would have been removed are being ignored.'.format(len(existing_unique_names)))
         elif removal_action == SUSPEND:
             if hasattr(django_object_model, 'is_active'):
-                django_object_model.objects.in_bulk(existing_user_ids).update(is_active=False)
-            logger.info('Suspended {} users.'.format(len(existing_user_ids)))
+                django_object_model.objects.in_bulk(existing_model_ids).update(is_active=False)
+                logger.info('Suspended {} {}.'.format(len(existing_model_ids), model_name))
+            else:
+                logger.info('REMOVAL_ACTION is set to SUSPEND however {} do not have an is_active attribute. Effective action will be NOTHING for {}.'.format(model_name, len(existing_model_ids)))
         elif removal_action == DELETE:
-            django_object_model.objects.in_bulk(existing_user_ids).all().delete()
+            django_object_model.objects.in_bulk(existing_model_ids).all().delete()
             logger.info('Deleted {} users.'.format(len(existing_unique_names)))
 
-        logger.info("Objects are synchronized")
-        self.stdout.write('Objects are synchronized')
+        logger.info("{} are synchronized".format(model_name))
+        self.stdout.write('{} are synchronized'.format(model_name))
 
     def will_model_change(self, value_map, user_model):
         # I think all the attrs are utf-8 strings, possibly need to coerce
@@ -336,6 +262,8 @@ class Command(NoArgsCommand):
 
         self.user_model = get_user_model()
         self.username_field = getattr(self.user_model, 'USERNAME_FIELD', 'username')
+
+        self.set_unusable_password = getattr(settings, 'LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD', True)
 
         # Check to make sure we have assigned a value to the username field
         if self.username_field not in self.user_model_attribute_names:
