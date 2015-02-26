@@ -1,6 +1,5 @@
 import logging
 
-
 import ldap3
 from ldap3.core.exceptions import LDAPExceptionError, LDAPCommunicationError
 
@@ -66,15 +65,6 @@ class Command(NoArgsCommand):
         logger.info('Rerieved {} LDAP Groups'.format(len(groups)))
         return groups
 
-    def get_ldap_group_membership(self, group_dn):
-        '''
-        Retrieve a list of user DN's that are members of a particular group.
-        '''
-        logger.debug('Retrieving members for group with DN {}'.format(group_dn))
-        members = self.smart_ldap_searcher.search(self.user_base, self.membership_filter.format(dn=group_dn))
-        logger.debug('Retrieved {} members for group with DN {}'.format(len(members), group_dn))
-        return members
-
     def sync_ldap_groups(self):
         """
         Synchronize LDAP groups with local group database.
@@ -91,6 +81,44 @@ class Command(NoArgsCommand):
                           ldap_sync_related_name='ldap_sync_group',
                           exempt_unique_names=self.exempt_groupnames,
                           removal_action=self.group_removal_action)
+
+    def get_ldap_group_membership(self, user_dn):
+        '''
+        Retrieve a list of django groups that this user DN is a member of.
+        '''
+        if not hasattr(self, '_group_cache'):
+            self._group_cache = {}
+        logger.debug('Retrieving groups that {} is a member of'.format(user_dn))
+        ldap_groups = self.smart_ldap_searcher.search(self.group_base, self.group_membership_filter.format(user_dn=user_dn), ldap3.SEARCH_SCOPE_SINGLE_LEVEL, None)
+        django_groups = []
+        for ldap_group in ldap_groups:
+            group_dn = ldap_group['dn']
+            if group_dn in self._group_cache:
+                django_groups.append(self._group_cache[group_dn])
+            else:
+                try:
+                    ldap_sync_group = LDAPGroup.objects.get(dn=group_dn)
+                    django_groups.append(ldap_sync_group.obj)
+                    self._group_cache[group_dn] = ldap_sync_group.obj
+                except LDAPGroup.DoesNotExist:
+                    logger.warning('Cannot find Django Group associated with DN {}'.format(ldap_group['dn']))
+                    continue
+        return django_groups
+
+    def sync_group_membership(self):
+        '''
+        Synchornize group membership with the directory. Only synchronize groups that have a related LDAPGroup object.
+        '''
+        django_users = self.get_django_users()
+        for django_user in django_users:
+            try:
+                user_dn = django_user.ldap_sync_user.dn
+            except LDAPUser.DoesNotExist:
+                logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
+                continue
+            django_groups = self.get_ldap_group_membership(user_dn)
+            django_user.groups = django_groups
+            django_user.save()
 
     def sync_generic(self,
                      ldap_objects,
@@ -163,8 +191,8 @@ class Command(NoArgsCommand):
         # Anything left in the existing_users dict is no longer in the ldap directory
         # These should be disabled.
         existing_unique_names = set(_unique_name for _unique_name in django_objects.keys())
-        existing_unique_names.difference_update(exempt_unique_names)
-        existing_model_ids = [e.id for e in django_objects.values() if getattr(e, unique_name_field) in existing_unique_names]
+        # existing_unique_names.difference_update(exempt_unique_names)
+        existing_model_ids = [djo.id for djo in django_objects.values() if getattr(djo, unique_name_field) in existing_unique_names]
 
         if removal_action == NOTHING:
             logger.info('Removal action is set to NOTHING so the {} objects that would have been removed are being ignored.'.format(len(existing_unique_names)))
@@ -222,13 +250,14 @@ class Command(NoArgsCommand):
         '''
         Return a dictionary of all existing users where the key is the username and the value is the user object.
         '''
-        return dict([(getattr(u, self.username_field), u) for u in self.get_django_objects(self.user_model)])
+        return dict([(getattr(u, self.username_field), u) for u in self.get_django_objects(self.user_model) if getattr(u, self.username_field) not in self.exempt_usernames])
 
     def get_django_groups(self):
         '''
         Return a dictionary of all existing groups where the key is the group name and the value is the group object.
+        DO NOT return any groups whose name in in the LDAP_SYNC_GROUP_EXEMPT_FROM_REMOVAL collection.
         '''
-        return dict([(g.name, g) for g in self.get_django_objects(Group)])
+        return dict([(g.name, g) for g in self.get_django_objects(Group) if g.name not in self.exempt_groupnames])
 
     def load_settings(self):
         '''
@@ -265,6 +294,8 @@ class Command(NoArgsCommand):
 
         self.set_unusable_password = getattr(settings, 'LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD', True)
 
+        self.sync_users = getattr(settings, 'LDAP_SYNC_USERS', True)
+
         # Check to make sure we have assigned a value to the username field
         if self.username_field not in self.user_model_attribute_names:
             raise ImproperlyConfigured("LDAP_SYNC_USER_ATTRIBUTES must contain the username field '%s'" % self.username_field)
@@ -295,13 +326,14 @@ class Command(NoArgsCommand):
         if self.group_removal_action not in GROUP_REMOVAL_OPTIONS:
             raise ImproperlyConfigured('LDAP_SYNC_GROUP_REMOVAL_ACTION must be one of {}'.format(GROUP_REMOVAL_OPTIONS))
 
-        self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', False)
-        if self.sync_membership:
-            self.group_ldap_attribute_names.append('member')
-
         self.exempt_groupnames = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_REMOVAL', [])
 
-        self.membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', '(objectClass=user)(memberOf={dn})')
+        self.sync_groups = getattr(settings, 'LDAP_SYNC_GROUPS', True)
+
+        self.sync_group_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', True)
+
+        self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', '(&(objectClass=group)(member={user_dn}))')
+
 
         # LDAP Servers
         try:
@@ -373,6 +405,20 @@ class SmartLDAPSearcher:
         connection.unbind()
         return results
 
+    def get(self, dn, attributes=[]):
+        '''Return the object referenced by the given dn or return None'''
+        # break the dn down and get a base from it
+        search_base = ','.join(dn.split(',')[1:])
+        connection = self.get_connection()
+        connection.search(search_base=base, search_filter='(distinguishedName={})'.format(dn), search_scope=ldap3.SEARCH_SCOPE_SINGLE_LEVEL, attributes=attributes)
+        results = connection.response
+        if len(results) > 1:
+            raise MultipleLDAPResultsReturnedMultipleLDAPResultsReturned()
+        elif len(results) == 0:
+            return None
+        else:
+            return results[0]
+
 
 class UnableToApplyValueMapError(Exception):
     pass
@@ -383,6 +429,10 @@ class MissingLdapField(Exception):
 
 
 class SyncError(Exception):
+    pass
+
+
+class MultipleLDAPResultsReturned(Exception):
     pass
 
 # class PagedResultsSearchObject:
