@@ -7,17 +7,17 @@ from ldap_sync.models import LDAPUser, LDAPGroup
 
 class LDAPUserAdmin(admin.ModelAdmin):
     model = LDAPUser
-    ordering = ['user__username']
+    ordering = ['obj__username']
     fields = ['distinguishedName']
-    search_fields = ['user__username', 'user__first_name',
-                     'user__last_name', 'distinguishedName']
+    search_fields = ['obj__username', 'obj__first_name',
+                     'obj__last_name', 'distinguishedName']
 
 
 class LDAPGroupAdmin(admin.ModelAdmin):
     model = LDAPGroup
-    ordering = ['group__name']
+    ordering = ['obj__name']
     fields = ['distinguishedName']
-    search_fields = ['group__name', 'distinguishedName']
+    search_fields = ['obj__name', 'distinguishedName']
 
 
 admin.site.register(LDAPUser, LDAPUserAdmin)
