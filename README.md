@@ -24,9 +24,9 @@ can be fired manually on demand, via an automatic cron script or as a periodic
 
 2. Append it to the installed apps::
 
-      `INSTALLED_APPS = (
-          # ...
-          'ldap3_sync',
+      `INSTALLED_APPS = (  
+          # ...  
+          'ldap3_sync',  
       )`
 
 3. Configure the required `settings`.
@@ -43,8 +43,8 @@ For more information on configuration see the documentation below.
 ##Configuration
 **User Synchronization Configuration Items**
 
-***LDAP_SYNC_USER_FILTER*** -- Required
-Default: `(objectClass=user)`
+***LDAP_SYNC_USER_FILTER***  
+Default: `(objectClass=user)`  
 The filter used to retrieve users from the directory. Must be in standard LDAP filter syntax as per [RFC2254](http://www.ietf.org/rfc/rfc2254.txt?number=2254)
 
 ***LDAP_SYNC_USER_BASE***
