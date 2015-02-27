@@ -350,28 +350,16 @@ class SmartLDAPSearcher:
         self.page_size = self.ldap_config.get('page_size', 500)
         self.bind_user = self.ldap_config.get('bind_user', None)
         self.bind_password = self.ldap_config.get('bind_password', None)
-        # Setup Server Pool
-        # pooling_strategy = self.ldap_config.get('pooling_strategy', 'ROUND_ROBIN')
-        # pooling_strategy = self._strategy_to_constant(pooling_strategy)
-        # import pdb; pdb.set_trace() 
-        self.server_pool = ldap3.ServerPool(None, ldap3.POOLING_STRATEGY_ROUND_ROBIN)
+        pooling_strategy = self.ldap_config.get('pooling_strategy', 'ROUND_ROBIN')
+        if pooling_strategy not in ldap3.POOLING_STRATEGIES:
+            raise ImproperlyConfigured('LDAP_CONFIG.pooling_strategy must be one of {}'.format(ldap3.POOLING_STRATEGIES))
+        self.server_pool = ldap3.ServerPool(None, pooling_strategy)
         try:
             server_defns = self.ldap_config.get('servers')
         except AttributeError:
             raise ImproperlyConfigured('ldap_config.servers must be defined and must contain at least one server')
         for server_defn in server_defns:
             self.server_pool.add(self._defn_to_server(server_defn))
-
-    def _strategy_to_constant(self, strategy):
-        '''Convert a strategy defined in the config file into an ldap3 constant'''
-        if strategy.lower() == 'round_robin':
-            return ldap3.POOLING_STRATEGY_ROUND_ROBIN
-        elif strategy.lower() == 'first':
-            return ldap3.POOLING_STRATEGY_FIRST
-        elif strategy.lower() == 'random':
-            return ldap3.POOLING_STRATEGY_RANDOM
-        else:
-            raise ImproperlyConfigured('Invalid pooling strategy passed {}, stratey can be one of RANDOM, ROUND_ROBIN, FIRST')
 
     def _defn_to_server(self, defn):
         '''Turn a settings file server definition into a ldap3 server object'''
@@ -380,9 +368,10 @@ class SmartLDAPSearcher:
         except AttributeError:
             raise ImproperlyConfigured('Server definition must contain an address')
         port = defn.get('port', 389)
-        use_ssl = True if defn.get('use_ssl', False) else False
+        use_ssl = defn.get('use_ssl', False)
         timeout = defn.get('timeout', 30)
-        return ldap3.Server(address, port=port, use_ssl=use_ssl, connect_timeout=timeout, get_info=ldap3.GET_SCHEMA_INFO)
+        get_info = defn.get('get_schema', ldap3.SCHEMA)
+        return ldap3.Server(address, port=port, use_ssl=use_ssl, connect_timeout=timeout, get_info=get_info)
 
     def get_connection(self):
         c = ldap3.Connection(self.server_pool, user=self.bind_user, password=self.bind_password)
