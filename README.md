@@ -145,8 +145,3 @@ A list of dictionaries each one containing configuration information for a serve
 	 - **get_schema**  
 		Default: `SCHEMA`  
 	Determines which schema information to retrieve from the server. At a minimum this should be SCHEMA so that values retrieved from the directory are coerced to proper python types.  
-
-
-.. _Celery: http://www.celeryproject.org
-.. _settings: http://django-ldap3-sync.readthedocs.org/en/latest/settings.html
-.. _django-ldap3-sync.readthedocs.org: http://django-ldap3-sync.readthedocs.org
