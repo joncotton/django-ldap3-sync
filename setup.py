@@ -9,9 +9,9 @@ from ldap_sync import __version__ as version
 
 
 packages = [
-    'ldap_sync',
-    'ldap_sync.management',
-    'ldap_sync.management.commands',
+    'ldap3_sync',
+    'ldap3_sync.management',
+    'ldap3_sync.management.commands',
 ]
 
 package_data = {
@@ -22,15 +22,15 @@ with open('README.rst') as f:
     readme = f.read()
 
 setup(
-    name='django-ldap-sync',
+    name='django-ldap3-sync',
     version=version,
-    description='A Django application for synchronizing LDAP users and groups',
+    description='A Django application for synchronizing LDAP users, groups and group membership',
     long_description=readme,
-    author='Jason Bittel',
-    author_email='jason.bittel@gmail.com',
-    url='https://github.com/jbittel/django-ldap-sync',
-    download_url='https://github.com/jbittel/django-ldap-sync/downloads',
-    package_dir={'ldap-sync': 'ldap-sync'},
+    author='Paul Gower',
+    author_email='p.gower@gmail.com',
+    url='https://github.com/PGower/django-ldap3-sync',
+    download_url='https://github.com/PGower/django-ldap3-sync/releases',
+    package_dir={'ldap3-sync': 'ldap3-sync'},
     packages=packages,
     package_data=package_data,
     license='BSD',
