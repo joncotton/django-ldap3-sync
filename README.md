@@ -24,10 +24,12 @@ can be fired manually on demand, via an automatic cron script or as a periodic
 
 2. Append it to the installed apps::
 
-      `INSTALLED_APPS = (
+      ```
+      INSTALLED_APPS = (
           # ...
           'ldap3_sync',
-      )`
+      )
+      ```
 
 3. Configure the required `settings`.
 
