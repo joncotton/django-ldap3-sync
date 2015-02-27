@@ -264,10 +264,7 @@ class Command(NoArgsCommand):
         Get all of the required settings to perform a sync and check them for sanity.
         '''
         # User sync settings
-        try:
-            self.user_filter = getattr(settings, 'LDAP_SYNC_USER_FILTER')
-        except AttributeError:
-            raise ImproperlyConfigured('LDAP_SYNC_USER_FILTER not found in settings. This is a required setting.')
+        self.user_filter = getattr(settings, 'LDAP_SYNC_USER_FILTER', '(objectClass=user)')
 
         try:
             self.user_base = getattr(settings, 'LDAP_SYNC_USER_BASE')
@@ -301,11 +298,7 @@ class Command(NoArgsCommand):
             raise ImproperlyConfigured("LDAP_SYNC_USER_ATTRIBUTES must contain the username field '%s'" % self.username_field)
 
         # Group sync settings
-        try:
-            self.group_filter = getattr(settings, 'LDAP_SYNC_GROUP_FILTER')
-        except AttributeError:
-            self.group_filter = None
-            logger.info("LDAP_SYNC_GROUP_FILTER not configured, skipping group sync")
+        self.group_filter = getattr(settings, 'LDAP_SYNC_GROUP_FILTER', '(objectClass=group)')
 
         try:
             self.group_base = getattr(settings, 'LDAP_SYNC_GROUP_BASE')
