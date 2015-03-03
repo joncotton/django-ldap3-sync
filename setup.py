@@ -7,12 +7,7 @@ except ImportError:
 
 from ldap3_sync import __version__ as version
 
-try:
-    import pypandoc
-    readme_rst = pypandoc.convert('README.md', 'rst')
-except (ImportError, IOError):
-    readme_rst = ''
-
+long_description = 'Please see the documentation at the `project page <https://github.com/PGower/django-ldap3-sync>`_ .'
 
 packages = [
     'ldap3_sync',
@@ -31,7 +26,7 @@ setup(
     name='django-ldap3-sync',
     version=version,
     description='A Django application for synchronizing LDAP users, groups and group membership. (Forked from django-ldap-sync).',
-    long_description=readme_rst,
+    long_description=long_description,
     author='Paul Gower',
     author_email='p.gower@gmail.com',
     url='https://github.com/PGower/django-ldap3-sync',
