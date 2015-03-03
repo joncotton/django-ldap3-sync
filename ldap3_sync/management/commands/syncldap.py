@@ -255,7 +255,7 @@ class Command(NoArgsCommand):
     def get_django_groups(self):
         '''
         Return a dictionary of all existing groups where the key is the group name and the value is the group object.
-        DO NOT return any groups whose name in in the LDAP_SYNC_GROUP_EXEMPT_FROM_REMOVAL collection.
+        DO NOT return any groups whose name in in the LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC collection.
         '''
         return dict([(g.name, g) for g in self.get_django_objects(Group) if g.name not in self.exempt_groupnames])
 
@@ -319,7 +319,7 @@ class Command(NoArgsCommand):
         if self.group_removal_action not in GROUP_REMOVAL_OPTIONS:
             raise ImproperlyConfigured('LDAP_SYNC_GROUP_REMOVAL_ACTION must be one of {}'.format(GROUP_REMOVAL_OPTIONS))
 
-        self.exempt_groupnames = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_REMOVAL', [])
+        self.exempt_groupnames = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC', [])
 
         self.sync_groups = getattr(settings, 'LDAP_SYNC_GROUPS', True)
 

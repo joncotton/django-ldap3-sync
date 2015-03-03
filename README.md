@@ -91,7 +91,7 @@ A dictionary of key value pairs where the keys are the names of LDAP fields and 
 Default: `NOTHING`  
 The action to take when a group no longer exists in the directory. Possible values are `NOTHING` and `DELETE`.
 
-***LDAP_SYNC_GROUP_EXEMPT_FROM_REMOVAL***  
+***LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC***  
 Default: `[]`  
 A list of group names of Django groups that should be excluded from the sync.
 
