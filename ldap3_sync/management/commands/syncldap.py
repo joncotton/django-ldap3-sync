@@ -9,7 +9,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured
 from django.db import IntegrityError, DataError
-from ldap_sync.models import LDAPUser, LDAPGroup
+from ldap3_sync.models import LDAPUser, LDAPGroup
 
 
 logger = logging.getLogger(__name__)
@@ -203,7 +203,7 @@ class Command(NoArgsCommand):
             else:
                 logger.info('REMOVAL_ACTION is set to SUSPEND however {} do not have an is_active attribute. Effective action will be NOTHING for {}.'.format(model_name, len(existing_model_ids)))
         elif removal_action == DELETE:
-            django_object_model.objects.in_bulk(existing_model_ids).all().delete()
+            django_object_model.objects.filter(id__in=existing_model_ids).all().delete()
             logger.info('Deleted {} users.'.format(len(existing_unique_names)))
 
         logger.info("{} are synchronized".format(model_name))

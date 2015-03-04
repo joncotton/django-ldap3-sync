@@ -1,5 +1,5 @@
 from django.contrib import admin
-from ldap_sync.models import LDAPUser, LDAPGroup
+from ldap3_sync.models import LDAPUser, LDAPGroup
 
 # Only providing these so that if something odd happens
 # They can be deleted from the admin interface
