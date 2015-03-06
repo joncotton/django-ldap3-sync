@@ -121,7 +121,7 @@ Configuration item used to configure the server pool. `LDAP_CONFIG` can contain 
  - **bind_user**  
     Default: `None`  
     The distinguished name of the user to bind to the directory with.  
- - **bind_pass**  
+ - **bind_password**  
    Default: `None`  
    The password of the user to bind to the directory with.  
  - **pooling_strategy**  

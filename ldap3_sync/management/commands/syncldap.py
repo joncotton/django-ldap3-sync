@@ -61,9 +61,7 @@ class Command(NoArgsCommand):
         Retrieve groups from target LDAP server.
         """
         logger.debug('Retrieving Groups from LDAP')
-        groups = self.smart_ldap_searcher.search(self.group_base, self.group_filter, ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, self.group_ldap_attribute_names)
-        logger.info('Rerieved {} LDAP Groups'.format(len(groups)))
-        return groups
+        return self.smart_ldap_searcher.search(self.group_base, self.group_filter, ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, self.group_ldap_attribute_names)
 
     def sync_ldap_groups(self):
         """
@@ -171,14 +169,16 @@ class Command(NoArgsCommand):
                     django_object.set_unusable_password()
                 unsaved_models.append(django_object)
         logger.debug('Bulk creating unsaved {}'.format(model_name))
-        django_object_model.objects.bulk_create(unsaved_models)
+        self.chunked_bulk_create(django_object_model, unsaved_models)
+        # django_object_model.objects.bulk_create(unsaved_models)
         logger.debug('Retrieving ID\'s for the objects that were just created')
 
         filter_key = '{}__in'.format(unique_name_field)
         filter_value = [getattr(u, unique_name_field) for u in unsaved_models]
         just_saved_models = django_object_model.objects.filter(**{filter_key: filter_value}).all()
         logger.debug('Bulk creating ldap_sync models')
-        ldap_sync_model.objects.bulk_create([ldap_sync_model(obj=u, distinguished_name=model_dn_map[getattr(u, unique_name_field)]) for u in just_saved_models])
+        new_ldap_sync_models = [ldap_sync_model(obj=u, distinguished_name=model_dn_map[getattr(u, unique_name_field)]) for u in just_saved_models]
+        self.chunked_bulk_create(ldap_sync_model, new_ldap_sync_models)
 
         msg = 'Updated {} existing {}'.format(updated_model_count, model_name)
         self.stdout.write(msg)
@@ -204,7 +204,7 @@ class Command(NoArgsCommand):
                 logger.info('REMOVAL_ACTION is set to SUSPEND however {} do not have an is_active attribute. Effective action will be NOTHING for {}.'.format(model_name, len(existing_model_ids)))
         elif removal_action == DELETE:
             django_object_model.objects.filter(id__in=existing_model_ids).all().delete()
-            logger.info('Deleted {} users.'.format(len(existing_unique_names)))
+            logger.info('Deleted {} {}.'.format(len(existing_unique_names), model_name))
 
         logger.info("{} are synchronized".format(model_name))
         self.stdout.write('{} are synchronized'.format(model_name))
@@ -216,6 +216,12 @@ class Command(NoArgsCommand):
             if not getattr(user_model, model_attr) == value:
                 return True
         return False
+
+    def chunked_bulk_create(self, django_model_object, unsaved_models, chunk_size=None):
+        if chunk_size is None:
+            chunk_size = self.bulk_create_chunk_size
+        for i in range(0, len(unsaved_models), chunk_size):
+            django_model_object.objects.bulk_create(unsaved_models[i:i + chunk_size])
 
     def apply_value_map(self, value_map, user_model):
         for k, v in value_map.items():
@@ -263,6 +269,8 @@ class Command(NoArgsCommand):
         '''
         Get all of the required settings to perform a sync and check them for sanity.
         '''
+        self.bulk_create_chunk_size = getattr(settings, 'LDAP_SYNC_BULK_CREATE_CHECK_SIZE', 50)
+
         # User sync settings
         self.user_filter = getattr(settings, 'LDAP_SYNC_USER_FILTER', '(objectClass=user)')
 
@@ -347,6 +355,7 @@ class SmartLDAPSearcher:
         if pooling_strategy not in ldap3.POOLING_STRATEGIES:
             raise ImproperlyConfigured('LDAP_CONFIG.pooling_strategy must be one of {}'.format(ldap3.POOLING_STRATEGIES))
         self.server_pool = ldap3.ServerPool(None, pooling_strategy)
+        logger.debug('Created new LDAP Server Pool with pooling strategy: {}'.format(pooling_strategy))
         try:
             server_defns = self.ldap_config.get('servers')
         except AttributeError:
@@ -368,13 +377,16 @@ class SmartLDAPSearcher:
 
     def get_connection(self):
         c = ldap3.Connection(self.server_pool, user=self.bind_user, password=self.bind_password)
-        c.bind()
+        r = c.bind()
+        logger.debug('Trying to bind connection, result is: {}'.format(r))
         return c
 
     def search(self, base, filter, scope, attributes):
         '''Perform a paged search but return all of the results in one hit'''
+        logger.debug('SmartLDAPSearcher.search called with base={}, filter={}, scope={} and attributes={}'.format(str(base), str(filter), str(scope), str(attributes)))
         connection = self.get_connection()
-        connection.search(search_base=base, search_filter=filter, search_scope=ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, attributes=attributes, paged_size=self.page_size, paged_cookie=None)
+        connection.search(search_base=base, search_filter=filter, search_scope=scope, attributes=attributes, paged_size=self.page_size, paged_cookie=None)
+        logger.debug('Connection.search.response is: {}'.format(connection.response))
         if len(connection.response) < self.page_size:
             results = connection.response
         else:
@@ -392,10 +404,10 @@ class SmartLDAPSearcher:
         # break the dn down and get a base from it
         search_base = ','.join(dn.split(',')[1:])
         connection = self.get_connection()
-        connection.search(search_base=base, search_filter='(distinguishedName={})'.format(dn), search_scope=ldap3.SEARCH_SCOPE_SINGLE_LEVEL, attributes=attributes)
+        connection.search(search_base=search_base, search_filter='(distinguishedName={})'.format(dn), search_scope=ldap3.SEARCH_SCOPE_SINGLE_LEVEL, attributes=attributes)
         results = connection.response
         if len(results) > 1:
-            raise MultipleLDAPResultsReturnedMultipleLDAPResultsReturned()
+            raise MultipleLDAPResultsReturned()
         elif len(results) == 0:
             return None
         else:
