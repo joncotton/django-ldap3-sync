@@ -176,6 +176,7 @@ class Command(NoArgsCommand):
         filter_key = '{}__in'.format(unique_name_field)
         filter_value = [getattr(u, unique_name_field) for u in unsaved_models]
         just_saved_models = django_object_model.objects.filter(**{filter_key: filter_value}).all()
+        just_saved_models = self.chunked_just_saved(django_object_model, filter_key, filter_value)
         logger.debug('Bulk creating ldap_sync models')
         new_ldap_sync_models = [ldap_sync_model(obj=u, distinguished_name=model_dn_map[getattr(u, unique_name_field)]) for u in just_saved_models]
         self.chunked_bulk_create(ldap_sync_model, new_ldap_sync_models)
@@ -218,10 +219,21 @@ class Command(NoArgsCommand):
         return False
 
     def chunked_bulk_create(self, django_model_object, unsaved_models, chunk_size=None):
+        '''Create new models using bulk_create in batches of `chunk_size`.
+        This is designed to overcome a query size limitation in some databases'''
         if chunk_size is None:
             chunk_size = self.bulk_create_chunk_size
         for i in range(0, len(unsaved_models), chunk_size):
             django_model_object.objects.bulk_create(unsaved_models[i:i + chunk_size])
+
+    def chunked_just_saved(self, django_model_object, filter_key, unique_names, chunk_size=None):
+        '''Get django_object_models in batches'''
+        if chunk_size is None:
+            chunk_size = self.bulk_create_chunk_size
+        results = []
+        for i in range(0, len(unique_names), chunk_size):
+            results += django_model_object.objects.filter(**{filter_key: unique_names[i:i + chunk_size]})
+        return results
 
     def apply_value_map(self, value_map, user_model):
         for k, v in value_map.items():
