@@ -298,7 +298,7 @@ class Command(NoArgsCommand):
             self.user_attribute_map = getattr(settings, 'LDAP_SYNC_USER_ATTRIBUTES')
         except AttributeError:
             raise ImproperlyConfigured('LDAP_SYNC_USER_ATTRIBUTES is a required setting')
-        self.user_ldap_attribute_names = self.user_attribute_map.keys()
+        self.user_ldap_attribute_names = list(self.user_attribute_map.keys())
         self.user_model_attribute_names = self.user_attribute_map.values()
 
         self.exempt_usernames = getattr(settings, 'LDAP_SYNC_USER_EXEMPT_FROM_SYNC', [])
@@ -332,7 +332,7 @@ class Command(NoArgsCommand):
             self.group_attribute_map = getattr(settings, 'LDAP_SYNC_GROUP_ATTRIBUTES')
         except AttributeError:
             raise ImproperlyConfigured('LDAP_SYNC_GROUP_ATTRIBUTES is a required setting')
-        self.group_ldap_attribute_names = self.group_attribute_map.keys()
+        self.group_ldap_attribute_names = list(self.group_attribute_map.keys())
         self.group_model_attribute_names = self.group_attribute_map.values()
 
         self.group_removal_action = getattr(settings, 'LDAP_SYNC_GROUP_REMOVAL_ACTION', NOTHING)
