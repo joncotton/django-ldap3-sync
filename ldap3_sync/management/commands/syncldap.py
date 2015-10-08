@@ -144,7 +144,11 @@ class Command(NoArgsCommand):
             except MissingLdapField as e:
                 logger.error('LDAP Object {} is missing a field: {}'.format(ldap_object['dn'], e))
                 continue
-            unique_name = value_map[unique_name_field]
+            # Courtesy of github:andebor
+            if type(value_map[unique_name_field]) is list:
+                unique_name = value_map[unique_name_field][0]
+            else:
+                unique_name = value_map[unique_name_field]
             distinguished_name = ldap_object['dn']
 
             model_dn_map[unique_name] = distinguished_name
@@ -252,6 +256,13 @@ class Command(NoArgsCommand):
                 value_map[model_attr] = ldap_attribute_values[ldap_attr]
             except KeyError:
                 raise MissingLdapField(ldap_attr)
+            # If we recieve a list / tuple for an LDAP attribute return only the first item.
+            if type(value_map[model_attr]) is list or type(value_map[model_attr]) is tuple:
+                try:
+                    value_map[model_attr] = value_map[model_attr][0]
+                except IndexError:
+                    # This might be the wront way to do this. If we recieved a value but its empty then that seems like something we want to know.
+                    value_map[model_attr] = None
         return value_map
 
     def get_django_objects(self, model):
