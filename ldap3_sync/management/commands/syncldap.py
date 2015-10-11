@@ -27,8 +27,12 @@ class Command(NoArgsCommand):
 
     def handle_noargs(self, **options):
         self.load_settings()
-        self.sync_ldap_users()
-        self.sync_ldap_groups()
+        if self.sync_users:
+            self.sync_ldap_users()
+        if self.sync_groups:
+            self.sync_ldap_groups()
+        if self.sync_membership:
+            self.sync_group_membership()
 
     def get_ldap_users(self):
         """
@@ -354,7 +358,7 @@ class Command(NoArgsCommand):
 
         self.sync_groups = getattr(settings, 'LDAP_SYNC_GROUPS', True)
 
-        self.sync_group_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', True)
+        self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', True)
 
         self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', '(&(objectClass=group)(member={user_dn}))')
 

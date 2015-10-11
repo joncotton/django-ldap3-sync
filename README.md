@@ -31,9 +31,11 @@ can be fired manually on demand, via an automatic cron script or as a periodic
       )
       ```
 
-3. Configure the required `settings`.
+3. Run `python manage.py migrate` in the django project directory.
 
-4. Run the synchronization management command::
+4. Configure the required `settings`.
+
+5. Run the synchronization management command::
 
       `manage.py syncldap`
 
