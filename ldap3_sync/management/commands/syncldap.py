@@ -2,6 +2,7 @@ import logging
 
 import ldap3
 from ldap3.core.exceptions import LDAPExceptionError, LDAPCommunicationError
+from ldap3.utils.conv import escape_bytes
 
 from django.conf import settings
 from django.core.management.base import NoArgsCommand
@@ -91,7 +92,7 @@ class Command(NoArgsCommand):
         if not hasattr(self, '_group_cache'):
             self._group_cache = {}
         logger.debug('Retrieving groups that {} is a member of'.format(user_dn))
-        ldap_groups = self.smart_ldap_searcher.search(self.group_base, self.group_membership_filter.format(user_dn=user_dn), ldap3.SEARCH_SCOPE_SINGLE_LEVEL, None)
+        ldap_groups = self.smart_ldap_searcher.search(self.group_base, self.group_membership_filter.format(user_dn=escape_bytes(user_dn)), ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, None)
         django_groups = []
         for ldap_group in ldap_groups:
             group_dn = ldap_group['dn']
@@ -99,7 +100,7 @@ class Command(NoArgsCommand):
                 django_groups.append(self._group_cache[group_dn])
             else:
                 try:
-                    ldap_sync_group = LDAPGroup.objects.get(dn=group_dn)
+                    ldap_sync_group = LDAPGroup.objects.get(distinguished_name=group_dn)
                     django_groups.append(ldap_sync_group.obj)
                     self._group_cache[group_dn] = ldap_sync_group.obj
                 except LDAPGroup.DoesNotExist:
@@ -112,15 +113,16 @@ class Command(NoArgsCommand):
         Synchornize group membership with the directory. Only synchronize groups that have a related LDAPGroup object.
         '''
         django_users = self.get_django_users()
-        for django_user in django_users:
+        for username, django_user in django_users.items():
             try:
-                user_dn = django_user.ldap_sync_user.dn
+                user_dn = django_user.ldap_sync_user.distinguished_name
             except LDAPUser.DoesNotExist:
                 logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
                 continue
             django_groups = self.get_ldap_group_membership(user_dn)
             django_user.groups = django_groups
             django_user.save()
+            self.stdout.write('{} added to {} groups'.format(username, len(django_groups)))
 
     def sync_generic(self,
                      ldap_objects,
@@ -360,7 +362,7 @@ class Command(NoArgsCommand):
 
         self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', True)
 
-        self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', '(&(objectClass=group)(member={user_dn}))')
+        self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', '((&(objectClass=group)(member={user_dn})))')
 
 
         # LDAP Servers
