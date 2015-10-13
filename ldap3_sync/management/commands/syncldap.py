@@ -12,6 +12,8 @@ from django.core.exceptions import ImproperlyConfigured
 from django.db import IntegrityError, DataError
 from ldap3_sync.models import LDAPUser, LDAPGroup
 
+import threading
+
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +23,27 @@ DELETE = 'DELETE'
 
 USER_REMOVAL_OPTIONS = (NOTHING, SUSPEND, DELETE)
 GROUP_REMOVAL_OPTIONS = (NOTHING, DELETE)
+
+DEFAULTS = {
+    'LDAP_SYNC_BULK_CREATE_CHECK_SIZE': 50,
+    'LDAP_SYNC_USER_FILTER': '(objectClass=user)',
+    'LDAP_SYNC_USER_EXEMPT_FROM_SYNC': [],
+    'LDAP_SYNC_USER_REMOVAL_ACTION': NOTHING,
+    'USERNAME_FIELD': 'username',
+    'LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD': True,
+    'LDAP_SYNC_USERS': True,
+    'LDAP_SYNC_GROUP_FILTER': '(objectClass=group)',
+    'LDAP_SYNC_GROUP_REMOVAL_ACTION': NOTHING,
+    'LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC': [],
+    'LDAP_SYNC_GROUPS': True,
+    'LDAP_SYNC_GROUP_MEMBERSHIP': True,
+    'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER': '(&(objectClass=group)(member={user_dn}))',
+    'LDAP_SYNC_MEMBERSHIP_SYNC_THREADS': 10,
+    'LDAP_SYNC_USE_THREADS': True,
+    'LDAP_SYNC_NUM_THREADS': 10
+}
+
+GROUP_CACHE = {}
 
 
 class Command(NoArgsCommand):
@@ -89,20 +112,18 @@ class Command(NoArgsCommand):
         '''
         Retrieve a list of django groups that this user DN is a member of.
         '''
-        if not hasattr(self, '_group_cache'):
-            self._group_cache = {}
         logger.debug('Retrieving groups that {} is a member of'.format(user_dn))
         ldap_groups = self.smart_ldap_searcher.search(self.group_base, self.group_membership_filter.format(user_dn=escape_bytes(user_dn)), ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, None)
         django_groups = []
         for ldap_group in ldap_groups:
             group_dn = ldap_group['dn']
-            if group_dn in self._group_cache:
-                django_groups.append(self._group_cache[group_dn])
+            if group_dn in GROUP_CACHE:
+                django_groups.append(GROUP_CACHE[group_dn])
             else:
                 try:
                     ldap_sync_group = LDAPGroup.objects.get(distinguished_name=group_dn)
                     django_groups.append(ldap_sync_group.obj)
-                    self._group_cache[group_dn] = ldap_sync_group.obj
+                    GROUP_CACHE[group_dn] = ldap_sync_group.obj
                 except LDAPGroup.DoesNotExist:
                     logger.warning('Cannot find Django Group associated with DN {}'.format(ldap_group['dn']))
                     continue
@@ -112,17 +133,38 @@ class Command(NoArgsCommand):
         '''
         Synchornize group membership with the directory. Only synchronize groups that have a related LDAPGroup object.
         '''
-        django_users = self.get_django_users()
-        for username, django_user in django_users.items():
-            try:
-                user_dn = django_user.ldap_sync_user.distinguished_name
-            except LDAPUser.DoesNotExist:
-                logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
-                continue
-            django_groups = self.get_ldap_group_membership(user_dn)
-            django_user.groups = django_groups
-            django_user.save()
-            self.stdout.write('{} added to {} groups'.format(username, len(django_groups)))
+        if self.use_threads:
+            divide_and_round_to_infinity = lambda a, b: (a + (-a % b)) // b
+            thread_pool = {}
+            data_buckets = dict([(i, {}) for i in range(0, self.num_threads)])
+            django_users = self.get_django_users()
+            # This looks horendous buts its pretty easy, generate a repeating list of bucket allocations for every user in django_users. ensures each thread bucket has roughly the same number users
+            bucket_allocations = [item for sublist in [range(0, self.num_threads) for i in range(0, divide_and_round_to_infinity(len(django_users), self.num_threads))] for item in sublist][0:len(django_users)]
+            for allocation, django_user in zip(bucket_allocations, django_users.values()):
+                try:
+                    user_dn = django_user.ldap_sync_user.distinguished_name
+                except LDAPUser.DoesNotExist:
+                    logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
+                    continue
+                data_buckets[allocation][user_dn] = django_user
+            for bucket_id, bucket_data in data_buckets.items():
+                thread_pool[bucket_id] = GroupMembershipSyncThread(bucket_data, self.group_base, self)
+                thread_pool[bucket_id].setName(bucket_id)
+                thread_pool[bucket_id].start()
+            for thread in thread_pool.values():
+                thread.join()
+        else:
+            django_users = self.get_django_users()
+            for username, django_user in django_users.items():
+                try:
+                    user_dn = django_user.ldap_sync_user.distinguished_name
+                except LDAPUser.DoesNotExist:
+                    logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
+                    continue
+                django_groups = self.get_ldap_group_membership(user_dn)
+                django_user.groups = django_groups
+                django_user.save()
+                self.stdout.write('{} added to {} groups'.format(username, len(django_groups)))
 
     def sync_generic(self,
                      ldap_objects,
@@ -298,10 +340,10 @@ class Command(NoArgsCommand):
         '''
         Get all of the required settings to perform a sync and check them for sanity.
         '''
-        self.bulk_create_chunk_size = getattr(settings, 'LDAP_SYNC_BULK_CREATE_CHECK_SIZE', 50)
+        self.bulk_create_chunk_size = getattr(settings, 'LDAP_SYNC_BULK_CREATE_CHECK_SIZE', DEFAULTS['LDAP_SYNC_BULK_CREATE_CHECK_SIZE'])
 
         # User sync settings
-        self.user_filter = getattr(settings, 'LDAP_SYNC_USER_FILTER', '(objectClass=user)')
+        self.user_filter = getattr(settings, 'LDAP_SYNC_USER_FILTER', DEFAULTS['LDAP_SYNC_USER_FILTER'])
 
         try:
             self.user_base = getattr(settings, 'LDAP_SYNC_USER_BASE')
@@ -318,24 +360,24 @@ class Command(NoArgsCommand):
         self.user_ldap_attribute_names = self.user_attribute_map.keys()
         self.user_model_attribute_names = self.user_attribute_map.values()
 
-        self.exempt_usernames = getattr(settings, 'LDAP_SYNC_USER_EXEMPT_FROM_SYNC', [])
-        self.user_removal_action = getattr(settings, 'LDAP_SYNC_USER_REMOVAL_ACTION', NOTHING)
+        self.exempt_usernames = getattr(settings, 'LDAP_SYNC_USER_EXEMPT_FROM_SYNC', DEFAULTS['LDAP_SYNC_USER_EXEMPT_FROM_SYNC'])
+        self.user_removal_action = getattr(settings, 'LDAP_SYNC_USER_REMOVAL_ACTION', DEFAULTS['LDAP_SYNC_USER_REMOVAL_ACTION'])
         if self.user_removal_action not in USER_REMOVAL_OPTIONS:
             raise ImproperlyConfigured('LDAP_SYNC_USER_REMOVAL_ACTION must be one of {}'.format(USER_REMOVAL_OPTIONS))
 
         self.user_model = get_user_model()
-        self.username_field = getattr(self.user_model, 'USERNAME_FIELD', 'username')
+        self.username_field = getattr(self.user_model, 'USERNAME_FIELD', DEFAULTS['USERNAME_FIELD'])
 
-        self.set_unusable_password = getattr(settings, 'LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD', True)
+        self.set_unusable_password = getattr(settings, 'LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD', DEFAULTS['LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD'])
 
-        self.sync_users = getattr(settings, 'LDAP_SYNC_USERS', True)
+        self.sync_users = getattr(settings, 'LDAP_SYNC_USERS', DEFAULTS['LDAP_SYNC_USERS'])
 
         # Check to make sure we have assigned a value to the username field
         if self.username_field not in self.user_model_attribute_names:
             raise ImproperlyConfigured("LDAP_SYNC_USER_ATTRIBUTES must contain the username field '%s'" % self.username_field)
 
         # Group sync settings
-        self.group_filter = getattr(settings, 'LDAP_SYNC_GROUP_FILTER', '(objectClass=group)')
+        self.group_filter = getattr(settings, 'LDAP_SYNC_GROUP_FILTER', DEFAULTS['LDAP_SYNC_GROUP_FILTER'])
 
         try:
             self.group_base = getattr(settings, 'LDAP_SYNC_GROUP_BASE')
@@ -352,17 +394,23 @@ class Command(NoArgsCommand):
         self.group_ldap_attribute_names = self.group_attribute_map.keys()
         self.group_model_attribute_names = self.group_attribute_map.values()
 
-        self.group_removal_action = getattr(settings, 'LDAP_SYNC_GROUP_REMOVAL_ACTION', NOTHING)
+        self.group_removal_action = getattr(settings, 'LDAP_SYNC_GROUP_REMOVAL_ACTION', DEFAULTS['LDAP_SYNC_GROUP_REMOVAL_ACTION'])
         if self.group_removal_action not in GROUP_REMOVAL_OPTIONS:
             raise ImproperlyConfigured('LDAP_SYNC_GROUP_REMOVAL_ACTION must be one of {}'.format(GROUP_REMOVAL_OPTIONS))
 
-        self.exempt_groupnames = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC', [])
+        self.exempt_groupnames = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC', DEFAULTS['LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC'])
 
-        self.sync_groups = getattr(settings, 'LDAP_SYNC_GROUPS', True)
+        self.sync_groups = getattr(settings, 'LDAP_SYNC_GROUPS', DEFAULTS['LDAP_SYNC_GROUPS'])
 
-        self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', True)
+        self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP'])
 
-        self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', '((&(objectClass=group)(member={user_dn})))')
+        self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP_FILTER'])
+
+        self.membership_sync_threads = getattr(settings, 'LDAP_SYNC_MEMBERSHIP_SYNC_THREADS', DEFAULTS['LDAP_SYNC_MEMBERSHIP_SYNC_THREADS'])
+
+        self.use_threads = getattr(settings, 'LDAP_SYNC_USE_THREADS', DEFAULTS['LDAP_SYNC_USE_THREADS'])
+
+        self.num_threads = getattr(settings, 'LDAP_SYNC_NUM_THREADS', DEFAULTS['LDAP_SYNC_NUM_THREADS'])
 
 
         # LDAP Servers
@@ -404,13 +452,18 @@ class SmartLDAPSearcher:
         get_info = defn.get('get_schema', ldap3.SCHEMA)
         return ldap3.Server(address, port=port, use_ssl=use_ssl, connect_timeout=timeout, get_info=get_info)
 
-    def get_connection(self):
+    def get_connection(self, strategy=ldap3.SYNC):
         c = ldap3.Connection(self.server_pool, user=self.bind_user, password=self.bind_password)
         r = c.bind()
         logger.debug('Trying to bind connection, result is: {}'.format(r))
         return c
 
-    def search(self, base, filter, scope, attributes):
+    def get_async_connection(self):
+        c = ldap3.Connection(self.server_pool, user=self.bind_user, password=self.bind_password, client_strategy=REUSABLE)
+        logger.debug('Creating async LDAP3 Connection object')
+        return c
+
+    def search(self, base, filter, scope, attributes, async=False):
         '''Perform a paged search but return all of the results in one hit'''
         logger.debug('SmartLDAPSearcher.search called with base={}, filter={}, scope={} and attributes={}'.format(str(base), str(filter), str(scope), str(attributes)))
         connection = self.get_connection()
@@ -423,6 +476,26 @@ class SmartLDAPSearcher:
             cookie = connection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
             while cookie:
                 connection.search(search_base=base, search_filter=filter, search_scope=ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, attributes=attributes, paged_size=self.page_size, paged_cookie=cookie)
+                results += connection.response
+                cookie = connection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
+        connection.unbind()
+        return results
+
+    def async_search(self, base, filter, scope, attributes):
+        logger.debug('SmartLDAPSearcher.async_search called with base={}, filter={}, scope={} and attributes={}'.format(str(base), str(filter), str(scope), str(attributes)))
+        connection = self.get_async_connection()
+        connection.bind()
+        message_id = connection.search(search_base=base, search_filter=filter, search_scope=scope, attributes=attributes, paged_size=self.page_size, paged_cookie=None)
+        #logger.debug('Connection.search.response is: {}'.format(connection.response))
+        connection.get_response(message_id)
+        if len(connection.response) < self.page_size:
+            results = connection.response
+        else:
+            results = connection.response
+            cookie = connection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
+            while cookie:
+                message_id = connection.search(search_base=base, search_filter=filter, search_scope=ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, attributes=attributes, paged_size=self.page_size, paged_cookie=cookie)
+
                 results += connection.response
                 cookie = connection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
         connection.unbind()
@@ -458,49 +531,38 @@ class SyncError(Exception):
 class MultipleLDAPResultsReturned(Exception):
     pass
 
-# class PagedResultsSearchObject:
-#     """
-#     Taken from the python-ldap paged_search_ext_s.py demo, showing how to use
-#     the paged results control: https://bitbucket.org/jaraco/python-ldap/
-#     """
-#     page_size = getattr(settings, 'LDAP_SYNC_PAGE_SIZE', 100)
 
-#     def paged_search_ext_s(self, base, scope, filterstr='(objectClass=*)',
-#                            attrlist=None, attrsonly=0, serverctrls=None,
-#                            clientctrls=None, timeout=-1, sizelimit=0):
-#         """
-#         Behaves exactly like LDAPObject.search_ext_s() but internally uses the
-#         simple paged results control to retrieve search results in chunks.
-#         """
-#         req_ctrl = SimplePagedResultsControl(True, size=self.page_size,
-#                                              cookie='')
+class GroupMembershipSyncThread(threading.Thread):
+    def __init__(self, bucket_data, group_base, command_ctx):
+        threading.Thread.__init__(self)
+        self.bucket_data = bucket_data
+        self.command_ctx = command_ctx
+        self.username_field = getattr(settings, 'USERNAME_FIELD', DEFAULTS['USERNAME_FIELD'])
+        self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP'])
+        self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP_FILTER'])
+        self.group_base = group_base # Passing this as is because there is logic i dont want to repeat from load_settings()
+        try:
+            self.ldap_config = getattr(settings, 'LDAP_CONFIG')
+        except AttributeError:
+            raise ImproperlyConfigured('LDAP_CONFIG is a required configuration item')
+        self.smart_ldap_searcher = SmartLDAPSearcher(self.ldap_config)
 
-#         # Send first search request
-#         msgid = self.search_ext(base, ldap.SCOPE_SUBTREE, filterstr,
-#                                 attrlist=attrlist,
-#                                 serverctrls=(serverctrls or []) + [req_ctrl])
-#         results = []
-
-#         while True:
-#             rtype, rdata, rmsgid, rctrls = self.result3(msgid)
-#             results.extend(rdata)
-#             # Extract the simple paged results response control
-#             pctrls = [c for c in rctrls if c.controlType ==
-#                       SimplePagedResultsControl.controlType]
-
-#             if pctrls:
-#                 if pctrls[0].cookie:
-#                     # Copy cookie from response control to request control
-#                     req_ctrl.cookie = pctrls[0].cookie
-#                     msgid = self.search_ext(base, ldap.SCOPE_SUBTREE,
-#                                             filterstr, attrlist=attrlist,
-#                                             serverctrls=(serverctrls or []) +
-#                                             [req_ctrl])
-#                 else:
-#                     break
-
-#         return results
-
-
-# class PagedLDAPObject(LDAPObject, PagedResultsSearchObject):
-#     pass
+    def run(self):
+        for user_dn, user_object in self.bucket_data.items():
+            ldap_groups = self.smart_ldap_searcher.search(self.group_base, self.group_membership_filter.format(user_dn=escape_bytes(user_dn)), ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, None)
+            django_groups = []
+            for ldap_group in ldap_groups:
+                group_dn = ldap_group['dn']
+                if group_dn in GROUP_CACHE:
+                    django_groups.append(GROUP_CACHE[group_dn])
+                else:
+                    try:
+                        ldap_sync_group = LDAPGroup.objects.get(distinguished_name=group_dn)
+                        django_groups.append(ldap_sync_group.obj)
+                        GROUP_CACHE[group_dn] = ldap_sync_group.obj
+                    except LDAPGroup.DoesNotExist:
+                        logger.warning('Cannot find Django Group associated with DN {}'.format(ldap_group['dn']))
+                        continue
+            user_object.groups = django_groups
+            user_object.save()
+            self.command_ctx.stdout.write('synchronized {} Groups for {} in thread {}'.format(len(django_groups), getattr(user_object, self.username_field), self.getName()))
