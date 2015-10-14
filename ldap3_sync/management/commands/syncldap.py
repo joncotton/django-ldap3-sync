@@ -128,9 +128,12 @@ class Command(NoArgsCommand):
                 logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
                 continue
             django_groups = self.get_ldap_group_membership(user_dn)
-            django_user.groups = django_groups
-            django_user.save()
-            self.stdout.write('{} added to {} groups'.format(username, len(django_groups)))
+            if not set([g.pk for g in django_user.groups.all()]) == set(django_groups):
+                django_user.groups = django_groups
+                django_user.save()
+                self.stdout.write('{} added to {} groups'.format(username, len(django_groups)))
+            else:
+                self.stdout.write('{} group membership unchanged'.format(username))
 
     def sync_generic(self,
                      ldap_objects,
