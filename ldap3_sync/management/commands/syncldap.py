@@ -9,7 +9,7 @@ from django.core.management.base import NoArgsCommand
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured
-from django.db import IntegrityError, DataError
+from django.db import IntegrityError, DataError, connection
 from ldap3_sync.models import LDAPUser, LDAPGroup
 
 
@@ -105,31 +105,44 @@ class Command(NoArgsCommand):
 
     def get_ldap_group_membership(self, user_dn):
         '''
-        Retrieve a list of django groups that this user DN is a member of.
+        Retrieve a list of django groups id's that this user DN is a member of.
         '''
         if not hasattr(self, '_group_cache'):
-            self._group_cache = {}
+            with connection.cursor() as c:
+                c.execute('SELECT distinguished_name, id FROM ldap3_sync_ldapgroup')
+                r = c.fetchall()
+                self._group_cache = dict(r)
         logger.debug('Retrieving groups that {} is a member of'.format(user_dn))
         ldap_groups = self.smart_ldap_searcher.search(self.group_base, self.group_membership_filter.format(user_dn=escape_bytes(user_dn)), ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, None)
-        django_groups = []
-        for ldap_group in ldap_groups:
-            group_dn = ldap_group['dn']
-            if group_dn in self._group_cache:
-                django_groups.append(self._group_cache[group_dn])
-            else:
-                try:
-                    ldap_sync_group = LDAPGroup.objects.get(distinguished_name=group_dn)
-                    django_groups.append(ldap_sync_group.obj)
-                    self._group_cache[group_dn] = ldap_sync_group.obj
-                except LDAPGroup.DoesNotExist:
-                    logger.warning('Cannot find Django Group associated with DN {}'.format(ldap_group['dn']))
-                    continue
-        return django_groups
+        group_dns = [i['dn'] for i in ldap_groups]
+        return filter(None, [self._group_cache.get(i, None) for i in group_dns])
+
+        # django_groups = []
+        # for ldap_group in ldap_groups:
+        #     group_dn = ldap_group['dn']
+        #     if group_dn in self._group_cache:
+        #         django_groups.append(self._group_cache[group_dn])
+        #     else:
+        #         try:
+        #             ldap_sync_group = LDAPGroup.objects.get(distinguished_name=group_dn)
+        #             django_groups.append(ldap_sync_group.obj)
+        #             self._group_cache[group_dn] = ldap_sync_group.obj
+        #         except LDAPGroup.DoesNotExist:
+        #             logger.warning('Cannot find Django Group associated with DN {}'.format(ldap_group['dn']))
+        #             continue
+        # return django_groups
 
     def sync_group_membership(self):
         '''
         Synchornize group membership with the directory. Only synchronize groups that have a related LDAPGroup object.
         '''
+        if self.raw_membership_update:
+            user_model = get_user_model()
+            membership_table_name = user_model.groups.through._meta.db_table
+            delete_query = 'DELETE FROM {} WHERE user_id = %s'.format(membership_table_name)
+            insert_query = 'INSERT INTO {} (user_id, group_id) VALUES (%s, %s)'.format(membership_table_name)
+            insert_data = []
+
         django_users = self.get_django_users()
         for username, django_user in django_users.items():
             try:
@@ -138,8 +151,13 @@ class Command(NoArgsCommand):
                 logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
                 continue
             django_groups = self.get_ldap_group_membership(user_dn)
-            django_user.groups = django_groups
-            django_user.save()
+            if self.raw_membership_update:
+                with connection.cursor() as c:
+                    c.execute(delete_query, (django_user.pk,))
+                    c.executemany(insert_query, [(django_user.pk, g) for g in django_groups])
+            else:
+                django_user.groups = django_groups
+                django_user.save()
             self.stdout.write('{} added to {} groups'.format(username, len(django_groups)))
 
     def sync_generic(self,
@@ -425,10 +443,9 @@ class SmartLDAPSearcher:
         return ldap3.Server(address, port=port, use_ssl=use_ssl, connect_timeout=timeout, get_info=get_info)
 
     def get_connection(self):
-        c = ldap3.Connection(self.server_pool, user=self.bind_user, password=self.bind_password)
-        r = c.bind()
-        logger.debug('Trying to bind connection, result is: {}'.format(r))
-        return c
+        if not hasattr(self, '_connection'):
+            self._connection = ldap3.Connection(self.server_pool, user=self.bind_user, password=self.bind_password, client_strategy=ldap3.SYNC, auto_bind=ldap3.AUTO_BIND_NO_TLS)
+        return self._connection
 
     def search(self, base, filter, scope, attributes):
         '''Perform a paged search but return all of the results in one hit'''
@@ -445,7 +462,6 @@ class SmartLDAPSearcher:
                 connection.search(search_base=base, search_filter=filter, search_scope=ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, attributes=attributes, paged_size=self.page_size, paged_cookie=cookie)
                 results += connection.response
                 cookie = connection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
-        connection.unbind()
         return results
 
     def get(self, dn, attributes=[]):
