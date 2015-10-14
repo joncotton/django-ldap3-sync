@@ -22,6 +22,24 @@ DELETE = 'DELETE'
 USER_REMOVAL_OPTIONS = (NOTHING, SUSPEND, DELETE)
 GROUP_REMOVAL_OPTIONS = (NOTHING, DELETE)
 
+DEFAULTS = {
+    'LDAP_SYNC_BULK_CREATE_CHECK_SIZE': 50,
+    'LDAP_SYNC_USER_FILTER': '(objectClass=user)',
+    'LDAP_SYNC_USER_EXEMPT_FROM_SYNC': [],
+    'LDAP_SYNC_USER_REMOVAL_ACTION': NOTHING,
+    'USERNAME_FIELD': 'username',
+    'LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD': True,
+    'LDAP_SYNC_USERS': True,
+    'LDAP_SYNC_GROUP_FILTER': '(objectClass=group)',
+    'LDAP_SYNC_GROUP_REMOVAL_ACTION': NOTHING,
+    'LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC': [],
+    'LDAP_SYNC_GROUPS': True,
+    'LDAP_SYNC_GROUP_MEMBERSHIP': True,
+    'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER': '(&(objectClass=group)(member={user_dn}))',
+    'LDAP_SYNC_RAW_MEMBERSHIP_UPDATE': False,
+
+}
+
 
 class Command(NoArgsCommand):
     help = "Synchronize users, groups and group membership from an LDAP server"
@@ -298,10 +316,10 @@ class Command(NoArgsCommand):
         '''
         Get all of the required settings to perform a sync and check them for sanity.
         '''
-        self.bulk_create_chunk_size = getattr(settings, 'LDAP_SYNC_BULK_CREATE_CHECK_SIZE', 50)
+        self.bulk_create_chunk_size = getattr(settings, 'LDAP_SYNC_BULK_CREATE_CHECK_SIZE', DEFAULTS['LDAP_SYNC_BULK_CREATE_CHECK_SIZE'])
 
         # User sync settings
-        self.user_filter = getattr(settings, 'LDAP_SYNC_USER_FILTER', '(objectClass=user)')
+        self.user_filter = getattr(settings, 'LDAP_SYNC_USER_FILTER', DEFAULTS['LDAP_SYNC_USER_FILTER'])
 
         try:
             self.user_base = getattr(settings, 'LDAP_SYNC_USER_BASE')
@@ -318,24 +336,24 @@ class Command(NoArgsCommand):
         self.user_ldap_attribute_names = self.user_attribute_map.keys()
         self.user_model_attribute_names = self.user_attribute_map.values()
 
-        self.exempt_usernames = getattr(settings, 'LDAP_SYNC_USER_EXEMPT_FROM_SYNC', [])
-        self.user_removal_action = getattr(settings, 'LDAP_SYNC_USER_REMOVAL_ACTION', NOTHING)
+        self.exempt_usernames = getattr(settings, 'LDAP_SYNC_USER_EXEMPT_FROM_SYNC', DEFAULTS['LDAP_SYNC_USER_EXEMPT_FROM_SYNC'])
+        self.user_removal_action = getattr(settings, 'LDAP_SYNC_USER_REMOVAL_ACTION', DEFAULTS['LDAP_SYNC_USER_REMOVAL_ACTION'])
         if self.user_removal_action not in USER_REMOVAL_OPTIONS:
             raise ImproperlyConfigured('LDAP_SYNC_USER_REMOVAL_ACTION must be one of {}'.format(USER_REMOVAL_OPTIONS))
 
         self.user_model = get_user_model()
-        self.username_field = getattr(self.user_model, 'USERNAME_FIELD', 'username')
+        self.username_field = getattr(self.user_model, 'USERNAME_FIELD', DEFAULTS['USERNAME_FIELD'])
 
-        self.set_unusable_password = getattr(settings, 'LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD', True)
+        self.set_unusable_password = getattr(settings, 'LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD', DEFAULTS['LDAP_SYNC_USER_SET_UNUSABLE_PASSWORD'])
 
-        self.sync_users = getattr(settings, 'LDAP_SYNC_USERS', True)
+        self.sync_users = getattr(settings, 'LDAP_SYNC_USERS', DEFAULTS['LDAP_SYNC_USERS'])
 
         # Check to make sure we have assigned a value to the username field
         if self.username_field not in self.user_model_attribute_names:
             raise ImproperlyConfigured("LDAP_SYNC_USER_ATTRIBUTES must contain the username field '%s'" % self.username_field)
 
         # Group sync settings
-        self.group_filter = getattr(settings, 'LDAP_SYNC_GROUP_FILTER', '(objectClass=group)')
+        self.group_filter = getattr(settings, 'LDAP_SYNC_GROUP_FILTER', DEFAULTS['LDAP_SYNC_GROUP_FILTER'])
 
         try:
             self.group_base = getattr(settings, 'LDAP_SYNC_GROUP_BASE')
@@ -352,17 +370,19 @@ class Command(NoArgsCommand):
         self.group_ldap_attribute_names = self.group_attribute_map.keys()
         self.group_model_attribute_names = self.group_attribute_map.values()
 
-        self.group_removal_action = getattr(settings, 'LDAP_SYNC_GROUP_REMOVAL_ACTION', NOTHING)
+        self.group_removal_action = getattr(settings, 'LDAP_SYNC_GROUP_REMOVAL_ACTION', DEFAULTS['LDAP_SYNC_GROUP_REMOVAL_ACTION'])
         if self.group_removal_action not in GROUP_REMOVAL_OPTIONS:
             raise ImproperlyConfigured('LDAP_SYNC_GROUP_REMOVAL_ACTION must be one of {}'.format(GROUP_REMOVAL_OPTIONS))
 
-        self.exempt_groupnames = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC', [])
+        self.exempt_groupnames = getattr(settings, 'LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC', DEFAULTS['LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC'])
 
-        self.sync_groups = getattr(settings, 'LDAP_SYNC_GROUPS', True)
+        self.sync_groups = getattr(settings, 'LDAP_SYNC_GROUPS', DEFAULTS['LDAP_SYNC_GROUPS'])
 
-        self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', True)
+        self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP'])
 
-        self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', '((&(objectClass=group)(member={user_dn})))')
+        self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP_FILTER'])
+
+        self.raw_membership_update = getattr(settings, 'LDAP_SYNC_RAW_MEMBERSHIP_UPDATE', DEFAULTS['LDAP_SYNC_RAW_MEMBERSHIP_UPDATE'])
 
 
         # LDAP Servers
