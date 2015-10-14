@@ -35,8 +35,7 @@ DEFAULTS = {
     'LDAP_SYNC_GROUP_EXEMPT_FROM_SYNC': [],
     'LDAP_SYNC_GROUPS': True,
     'LDAP_SYNC_GROUP_MEMBERSHIP': True,
-    'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER': '(&(objectClass=group)(member={user_dn}))',
-    'LDAP_SYNC_RAW_MEMBERSHIP_UPDATE': False,
+    'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER': '(&(objectClass=group)(member={user_dn}))'
 
 }
 
@@ -117,32 +116,10 @@ class Command(NoArgsCommand):
         group_dns = [i['dn'] for i in ldap_groups]
         return filter(None, [self._group_cache.get(i, None) for i in group_dns])
 
-        # django_groups = []
-        # for ldap_group in ldap_groups:
-        #     group_dn = ldap_group['dn']
-        #     if group_dn in self._group_cache:
-        #         django_groups.append(self._group_cache[group_dn])
-        #     else:
-        #         try:
-        #             ldap_sync_group = LDAPGroup.objects.get(distinguished_name=group_dn)
-        #             django_groups.append(ldap_sync_group.obj)
-        #             self._group_cache[group_dn] = ldap_sync_group.obj
-        #         except LDAPGroup.DoesNotExist:
-        #             logger.warning('Cannot find Django Group associated with DN {}'.format(ldap_group['dn']))
-        #             continue
-        # return django_groups
-
     def sync_group_membership(self):
         '''
         Synchornize group membership with the directory. Only synchronize groups that have a related LDAPGroup object.
         '''
-        if self.raw_membership_update:
-            user_model = get_user_model()
-            membership_table_name = user_model.groups.through._meta.db_table
-            delete_query = 'DELETE FROM {} WHERE user_id = %s'.format(membership_table_name)
-            insert_query = 'INSERT INTO {} (user_id, group_id) VALUES (%s, %s)'.format(membership_table_name)
-            insert_data = []
-
         django_users = self.get_django_users()
         for username, django_user in django_users.items():
             try:
@@ -151,13 +128,8 @@ class Command(NoArgsCommand):
                 logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
                 continue
             django_groups = self.get_ldap_group_membership(user_dn)
-            if self.raw_membership_update:
-                with connection.cursor() as c:
-                    c.execute(delete_query, (django_user.pk,))
-                    c.executemany(insert_query, [(django_user.pk, g) for g in django_groups])
-            else:
-                django_user.groups = django_groups
-                django_user.save()
+            django_user.groups = django_groups
+            django_user.save()
             self.stdout.write('{} added to {} groups'.format(username, len(django_groups)))
 
     def sync_generic(self,
@@ -399,8 +371,6 @@ class Command(NoArgsCommand):
         self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP'])
 
         self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP_FILTER'])
-
-        self.raw_membership_update = getattr(settings, 'LDAP_SYNC_RAW_MEMBERSHIP_UPDATE', DEFAULTS['LDAP_SYNC_RAW_MEMBERSHIP_UPDATE'])
 
 
         # LDAP Servers
