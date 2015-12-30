@@ -4,7 +4,7 @@ import ldap3
 from ldap3.utils.conv import escape_bytes
 
 from django.conf import settings
-from django.core.management.base import NoArgsCommand
+from django.core.management.base import BaseCommand, CommandError
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured
@@ -39,10 +39,13 @@ DEFAULTS = {
 }
 
 
-class Command(NoArgsCommand):
+class Command(BaseCommand):
     help = "Synchronize users, groups and group membership from an LDAP server"
 
-    def handle_noargs(self, **options):
+    def handle(self, *args, **options):
+        if args:
+            raise CommandError("Command doesn't accept any arguments")
+
         self.load_settings()
         if self.sync_users:
             self.sync_ldap_users()
