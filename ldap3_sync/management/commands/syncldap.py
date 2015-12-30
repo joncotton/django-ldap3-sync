@@ -1,7 +1,6 @@
 import logging
 
 import ldap3
-from ldap3.core.exceptions import LDAPExceptionError, LDAPCommunicationError
 from ldap3.utils.conv import escape_bytes
 
 from django.conf import settings
@@ -9,7 +8,7 @@ from django.core.management.base import NoArgsCommand
 from django.contrib.auth import get_user_model
 from django.contrib.auth.models import Group
 from django.core.exceptions import ImproperlyConfigured
-from django.db import IntegrityError, DataError, connection
+from django.db import connection
 from ldap3_sync.models import LDAPUser, LDAPGroup
 
 
@@ -374,7 +373,6 @@ class Command(NoArgsCommand):
         self.sync_membership = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP'])
 
         self.group_membership_filter = getattr(settings, 'LDAP_SYNC_GROUP_MEMBERSHIP_FILTER', DEFAULTS['LDAP_SYNC_GROUP_MEMBERSHIP_FILTER'])
-
 
         # LDAP Servers
         try:
