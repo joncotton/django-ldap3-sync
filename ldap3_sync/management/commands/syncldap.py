@@ -113,7 +113,7 @@ class Command(NoArgsCommand):
                 self._group_cache = dict(r)
         logger.debug('Retrieving groups that {} is a member of'.format(user_dn))
         ldap_groups = self.smart_ldap_searcher.search(self.group_base, self.group_membership_filter.format(user_dn=escape_bytes(user_dn)), ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, None)
-        group_dns = [i['dn'] for i in ldap_groups]
+        group_dns = [i['dn'] for i in ldap_groups if i.get('type') == 'searchResEntry']
         return filter(None, [self._group_cache.get(i, None) for i in group_dns])
 
     def sync_group_membership(self):
@@ -156,6 +156,9 @@ class Command(NoArgsCommand):
         updated_model_count = 0
 
         for ldap_object in ldap_objects:
+            if ldap_object.get('type') != 'searchResEntry':
+                continue
+
             try:
                 value_map = self.generate_value_map(attribute_map, ldap_object['attributes'])
             except MissingLdapField as e:
