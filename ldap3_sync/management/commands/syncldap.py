@@ -427,10 +427,9 @@ class SmartLDAPSearcher:
         connection = self.get_connection()
         connection.search(search_base=base, search_filter=filter, search_scope=scope, attributes=attributes, paged_size=self.page_size, paged_cookie=None)
         logger.debug('Connection.search.response is: {}'.format(connection.response))
-        if len(connection.response) < self.page_size:
-            results = connection.response
-        else:
-            results = connection.response
+
+        results = connection.response
+        if len(connection.response) > self.page_size:
             cookie = connection.result['controls']['1.2.840.113556.1.4.319']['value']['cookie']
             while cookie:
                 connection.search(search_base=base, search_filter=filter, search_scope=ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, attributes=attributes, paged_size=self.page_size, paged_cookie=cookie)
