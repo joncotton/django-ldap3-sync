@@ -103,18 +103,13 @@ class Command(NoArgsCommand):
                           removal_action=self.group_removal_action)
 
     def get_ldap_group_membership(self, user_dn):
-        '''
-        Retrieve a list of django groups id's that this user DN is a member of.
-        '''
+        """Retrieve django group ids that this user DN is a member of."""
         if not hasattr(self, '_group_cache'):
-            with connection.cursor() as c:
-                c.execute('SELECT distinguished_name, obj_id FROM ldap3_sync_ldapgroup')
-                r = c.fetchall()
-                self._group_cache = dict(r)
+            r = LDAPGroup.objects.all().values_list('distinguished_name', 'obj')
+            self._group_cache = dict(r)
         logger.debug('Retrieving groups that {} is a member of'.format(user_dn))
         ldap_groups = self.smart_ldap_searcher.search(self.group_base, self.group_membership_filter.format(user_dn=escape_bytes(user_dn)), ldap3.SEARCH_SCOPE_WHOLE_SUBTREE, None)
-        group_dns = [i['dn'] for i in ldap_groups if i.get('type') == 'searchResEntry']
-        return filter(None, [self._group_cache.get(i, None) for i in group_dns])
+        return (self._group_cache.get(i['dn']) for i in ldap_groups if i.get('dn'))
 
     def sync_group_membership(self):
         '''
@@ -127,8 +122,8 @@ class Command(NoArgsCommand):
             except LDAPUser.DoesNotExist:
                 logger.warning('Django user with {} = {} does not have a distinguishedName associated'.format(self.username_field, getattr(django_user, self.username_field)))
                 continue
-            django_groups = self.get_ldap_group_membership(user_dn)
-            if not set([g.pk for g in django_user.groups.all()]) == set(django_groups):
+            django_groups = set(self.get_ldap_group_membership(user_dn))
+            if not set([g.pk for g in django_user.groups.all()]) == django_groups:
                 django_user.groups = django_groups
                 django_user.save()
                 self.stdout.write('{} added to {} groups'.format(username, len(django_groups)))
