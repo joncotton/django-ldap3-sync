@@ -108,7 +108,7 @@ class Command(NoArgsCommand):
         '''
         if not hasattr(self, '_group_cache'):
             with connection.cursor() as c:
-                c.execute('SELECT distinguished_name, id FROM ldap3_sync_ldapgroup')
+                c.execute('SELECT distinguished_name, obj_id FROM ldap3_sync_ldapgroup')
                 r = c.fetchall()
                 self._group_cache = dict(r)
         logger.debug('Retrieving groups that {} is a member of'.format(user_dn))
